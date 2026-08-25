@@ -1,242 +1,287 @@
 // RISQUES — /api/gpu.js
 //
-// Diagnostic du Geoportail de l'urbanisme via le module GPU d'API Carto.
+// Interrogation du Geoportail de l'urbanisme via le module GPU d'API Carto,
+// avec qualification par codes CNIG.
 //
-// OBJET
-// Le 7° de R.125-23 vise les zones exposees au recul du trait de cote,
-// delimitees par un PLU, un document en tenant lieu ou une carte communale,
-// ou determinees par une carte de prefiguration. Ces zones ne sont PAS dans
-// Georisques : elles relevent des documents d'urbanisme (addendum v9 et v11).
+// SOURCE DES CODES
+// Standard CNIG PLU v2024 rev. 2025-06 (millesime PrescriptionUrbaType 2025-06,
+// millesime InformationUrbaType 2022-06), publie sur le GPU. Les codes ci-dessous
+// sont releves dans les tables PrescriptionUrbaType et InformationUrbaType.
 //
-// On ne sait pas a priori quelle couche du standard CNIG porte ces zones :
-// elles sont recentes (loi Climat et Resilience, decret de 2022) et peuvent
-// etre encodees en zone_urba, en prescription surfacique, en secteur de carte
-// communale ou en info surfacique. Cet endpoint interroge donc TOUTES les
-// couches et restitue les vocabulaires observes, afin de deduire la regle des
-// donnees plutot que de la supposer. Meme methode que pour Georisques : un 404
-// signale un nom de couche errone, non une absence de donnee.
+// CE QUI RELEVE DE R.125-23
+//   7° recul du trait de cote :
+//      - PRESCRIPTION 54-01 : zone exposee a l'horizon de trente ans (L121-22-2)
+//      - PRESCRIPTION 54-02 : zone exposee entre trente et cent ans (L121-22-2)
+//      - carte de prefiguration : INFORMATION surfacique, TYPEINF 99 / STYPEINF 00,
+//        reconnaissable au seul TXT "pre-ZERTC" ou au libelle. Convention fragile,
+//        signalee comme telle dans la restitution.
+//        Elle s'applique tant que les ZERTC ne sont pas en vigueur et a defaut de
+//        PPR littoral approuve comportant des dispositions sur le trait de cote.
+//   8° debroussaillement : INFORMATION 43-00, en complement de /api/v2/old
 //
-// Note CORS : apicarto.ign.fr autorise l'appel navigateur (constate sur URBA).
-// Le passage par une fonction serverless n'est donc pas indispensable ici ;
-// il est retenu pour homogeneite avec /api/test et pour tracer les appels.
+// AUTRES REGIMES (addendum v9, section 3)
+//   L.125-7 pollution des sols : INFORMATION 38-00 (secteurs d'information sur les sols)
+//   code de l'urbanisme, bruit  : INFORMATION 27-00 (plan d'exposition au bruit)
+//
+// PIEGE CONSIGNE (addendum v14)
+//   La couche acte-sup IGNORE la geometrie et retourne un catalogue national
+//   plafonne a 5000 entites. Elle n'est plus interrogee.
 //
 // Usage :
 //   /api/gpu
 //   /api/gpu?parcelle=62160-000-XM-0307
-//   /api/gpu?couche=zone-urba
-//   /api/gpu?insee=62160            (couches interrogeables par commune)
+//   /api/gpu?couche=prescription-surf
 
 const IGN_CADASTRE = 'https://apicarto.ign.fr/api/cadastre/parcelle';
 const IGN_GPU = 'https://apicarto.ign.fr/api/gpu';
 
-const DEFAUTS = { parcelle: '62160-000-XM-0307', insee: '62160' };
+const DEFAUTS = { parcelle: '62160-000-XM-0307' };
 
-// Couches du module GPU. Les noms sont ceux du standard CNIG tel qu'expose par
-// API Carto ; ils restent A CONFIRMER par l'appel : un 404 vaut demonstration.
 const COUCHES = {
-  municipality:      { mode: 'geom', role: 'commune et regime applicable (RNU ou document)' },
-  document:          { mode: 'geom', role: 'document d\'urbanisme applicable, partition, pieces ecrites' },
-  'zone-urba':       { mode: 'geom', role: 'zonage : champ urlfic = lien du reglement' },
-  'secteur-cc':      { mode: 'geom', role: 'secteurs de carte communale' },
-  'prescription-surf': { mode: 'geom', role: 'prescriptions surfaciques — CANDIDAT trait de cote' },
-  'prescription-lin':  { mode: 'geom', role: 'prescriptions lineaires' },
-  'prescription-pct':  { mode: 'geom', role: 'prescriptions ponctuelles' },
-  'info-surf':       { mode: 'geom', role: 'informations surfaciques — CANDIDAT trait de cote' },
-  'info-lin':        { mode: 'geom', role: 'informations lineaires' },
-  'info-pct':        { mode: 'geom', role: 'informations ponctuelles' },
-  'acte-sup':        { mode: 'geom', role: 'actes instituant les servitudes' },
-  'assiette-sup-s':  { mode: 'geom', role: 'assiettes de SUP surfaciques' },
-  'assiette-sup-l':  { mode: 'geom', role: 'assiettes de SUP lineaires' },
-  'assiette-sup-p':  { mode: 'geom', role: 'assiettes de SUP ponctuelles' },
-  'generateur-sup-s': { mode: 'geom', role: 'generateurs de SUP surfaciques' },
-  'generateur-sup-l': { mode: 'geom', role: 'generateurs de SUP lineaires' },
-  'generateur-sup-p': { mode: 'geom', role: 'generateurs de SUP ponctuels' }
+  municipality:       { role: 'commune : is_rnu et is_coastline' },
+  document:           { role: "document d'urbanisme applicable et partition" },
+  'zone-urba':        { role: 'zonage reglementaire' },
+  'secteur-cc':       { role: 'secteurs de carte communale' },
+  'prescription-surf': { role: 'prescriptions surfaciques — porte 54-01 et 54-02' },
+  'prescription-lin':  { role: 'prescriptions lineaires' },
+  'prescription-pct':  { role: 'prescriptions ponctuelles' },
+  'info-surf':        { role: 'informations surfaciques — porte 27-00, 38-00, 43-00 et pre-ZERTC' },
+  'info-lin':         { role: 'informations lineaires' },
+  'info-pct':         { role: 'informations ponctuelles' },
+  'assiette-sup-s':   { role: 'assiettes de SUP surfaciques' },
+  'assiette-sup-l':   { role: 'assiettes de SUP lineaires' },
+  'assiette-sup-p':   { role: 'assiettes de SUP ponctuelles' },
+  'generateur-sup-s': { role: 'generateurs de SUP surfaciques' },
+  'generateur-sup-l': { role: 'generateurs de SUP lineaires' },
+  'generateur-sup-p': { role: 'generateurs de SUP ponctuels' }
+  // acte-sup volontairement absente : ne filtre pas sur l'emprise (addendum v14).
 };
 
-// Termes recherches dans les libelles restitues, pour reperer une eventuelle
-// mention du recul du trait de cote quelle que soit la couche porteuse.
-const INDICES = [
-  'trait de cote', 'trait de côte', 'recul', 'erosion', 'érosion',
-  'littoral', 'falaise', 'submersion', 'l121-22', 'l.121-22', 'prefiguration',
-  'préfiguration', 'rtc'
-];
+// Prescriptions relevant de l'etat des risques.
+const PRESCRIPTIONS_ERP = {
+  '54-01': { article: 'R.125-23 7°', libelle: "Zone exposee au recul du trait de cote a l'horizon de trente ans", visa: 'L121-22-2' },
+  '54-02': { article: 'R.125-23 7°', libelle: 'Zone exposee au recul du trait de cote entre trente et cent ans', visa: 'L121-22-2' }
+};
+
+// Informations relevant de l'etat des risques ou des regimes connexes.
+const INFORMATIONS_ERP = {
+  '43-00': { article: 'R.125-23 8°', libelle: "Secteur d'obligation legale de debroussaillement", regime: 'IAL' },
+  '38-00': { article: 'L.125-6 et L.125-7', libelle: "Secteur d'information sur les sols", regime: 'pollution des sols' },
+  '27-00': { article: 'code de l\'urbanisme L112-6', libelle: "Plan d'exposition au bruit des aerodromes", regime: 'nuisances sonores aeriennes' },
+  '21-00': { article: 'contexte', libelle: 'Projet de plan de prevention des risques', regime: 'information' },
+  '14-00': { article: 'contexte', libelle: "Secteur affecte par le bruit d'une infrastructure terrestre", regime: 'information' },
+  '17-00': { article: 'contexte', libelle: "Zone a risque d'exposition au plomb", regime: 'information' }
+};
 
 export default async function handler(req, res) {
   const depart = Date.now();
   const parcelle = (req.query.parcelle || DEFAUTS.parcelle).toString();
-  const insee = (req.query.insee || DEFAUTS.insee).toString();
   const demandee = req.query.couche ? req.query.couche.toString() : null;
 
-  const socle = { horodatage: new Date().toISOString(), parametres: { parcelle, insee } };
+  const socle = { horodatage: new Date().toISOString(), parametres: { parcelle } };
 
   if (demandee && !COUCHES[demandee]) {
     return res.status(400).json({
       ...socle, resultat: 'ECHEC',
-      cause: `Couche inconnue : ${demandee}`,
+      cause: `Couche inconnue ou volontairement exclue : ${demandee}`,
       couches_disponibles: Object.keys(COUCHES)
     });
   }
 
-  // --- Etape 1 : geometrie de la parcelle --------------------------------
   const geo = await geometrieParcelle(parcelle);
   if (!geo.obtenu) {
-    return res.status(200).json({
-      ...socle, resultat: 'ECHEC',
-      geometrie: geo,
-      consequence: 'Sans geometrie, aucune couche GPU ne peut etre interrogee.'
-    });
+    return res.status(200).json({ ...socle, resultat: 'ECHEC', geometrie: geo });
   }
 
   const aTester = demandee ? [demandee] : Object.keys(COUCHES);
   const resultats = {};
   for (const nom of aTester) {
-    resultats[nom] = await interrogerCouche(nom, COUCHES[nom], geo.geometrie);
+    resultats[nom] = await interroger(nom, COUCHES[nom], geo.geometrie);
     if (aTester.length > 1) await pause(150);
-  }
-
-  // --- Synthese ---------------------------------------------------------
-  const joignables = [];
-  const inconnues = [];
-  const avecDonnees = [];
-  const pistes = [];
-
-  for (const [nom, r] of Object.entries(resultats)) {
-    if (r.code_http === 404) inconnues.push(nom);
-    else if (r.code_http === 200) {
-      joignables.push(nom);
-      if (r.entites > 0) avecDonnees.push({ couche: nom, entites: r.entites });
-      if (r.indices_trait_de_cote && r.indices_trait_de_cote.length) {
-        pistes.push({ couche: nom, correspondances: r.indices_trait_de_cote });
-      }
-    }
   }
 
   return res.status(200).json({
     ...socle,
-    resultat: inconnues.length ? 'PARTIEL' : 'SUCCES',
-    geometrie: { obtenu: true, type: geo.geometrie.type, contenance_m2: geo.contenance },
+    resultat: 'SUCCES',
+    geometrie: { type: geo.geometrie.type, contenance_m2: geo.contenance },
+    commune: lireCommune(resultats.municipality),
+    document: lireDocument(resultats.document),
+    etat_des_risques: qualifier(resultats),
     synthese: {
       couches_testees: aTester.length,
-      joignables: joignables.length,
-      noms_errones: inconnues,
-      avec_donnees: avecDonnees,
       duree_totale_ms: Date.now() - depart
-    },
-    recul_trait_de_cote: {
-      article: 'R.125-23 7°',
-      pistes_reperees: pistes,
-      lecture: pistes.length
-        ? "Une ou plusieurs couches mentionnent le trait de cote : examiner les libelles pour etablir la regle de qualification."
-        : "Aucune mention du trait de cote sur cette parcelle. Non concluant : la parcelle de test n'est peut-etre pas en zone. Rejouer sur une commune littorale dotee d'une carte de prefiguration."
     },
     couches: resultats
   });
 }
 
 // ---------------------------------------------------------------------------
+function qualifier(r) {
+  const corps = [];
+  const regimes_connexes = [];
+  const alertes = [];
+
+  // --- 7° : prescriptions 54-01 et 54-02 --------------------------------
+  const pres = collecter(r, ['prescription-surf', 'prescription-lin', 'prescription-pct']);
+  for (const p of pres) {
+    const code = `${pad(p.typepsc)}-${pad(p.stypepsc)}`;
+    const ref = PRESCRIPTIONS_ERP[code];
+    if (ref) {
+      corps.push({
+        code_cnig: code, article: ref.article, libelle: ref.libelle,
+        visa: ref.visa, texte_local: p.libelle || null, etiquette: p.txt || null,
+        fichier: p.nomfic || null, lien: p.urlfic || null
+      });
+    }
+  }
+
+  // --- Informations : 43-00, 38-00, 27-00 et contexte -------------------
+  const infos = collecter(r, ['info-surf', 'info-lin', 'info-pct']);
+  for (const i of infos) {
+    const code = `${pad(i.typeinf)}-${pad(i.stypeinf)}`;
+    const ref = INFORMATIONS_ERP[code];
+    if (ref && ref.regime === 'IAL') {
+      corps.push({
+        code_cnig: code, article: ref.article, libelle: ref.libelle,
+        texte_local: i.libelle || null, etiquette: i.txt || null
+      });
+    } else if (ref) {
+      regimes_connexes.push({
+        code_cnig: code, regime: ref.regime, article: ref.article,
+        libelle: ref.libelle, texte_local: i.libelle || null, etiquette: i.txt || null
+      });
+    }
+
+    // --- Carte de prefiguration : convention par libelle, non par code ---
+    const txt = (i.txt || '').toLowerCase();
+    const lib = (i.libelle || '').toLowerCase();
+    if (txt.includes('pre-zertc') || lib.includes('prefiguration des zones exposees au recul')
+        || lib.includes('préfiguration des zones exposées au recul')) {
+      corps.push({
+        code_cnig: `${pad(i.typeinf)}-${pad(i.stypeinf)}`,
+        article: 'R.125-23 7°',
+        libelle: 'Carte de prefiguration des zones exposees au recul du trait de cote',
+        texte_local: i.libelle || null, etiquette: i.txt || null,
+        avertissement: "Detectee par libelle et non par code : le standard impose TYPEINF 99 / STYPEINF 00, code generique. Verification humaine recommandee."
+      });
+    }
+  }
+
+  // --- Alertes de methode ------------------------------------------------
+  const com = premier(r.municipality);
+  if (com && com.is_coastline === true) {
+    const aTraitDeCote = corps.some(c => c.article === 'R.125-23 7°');
+    if (!aTraitDeCote) {
+      alertes.push("Commune littorale (is_coastline vrai) sans zone de recul du trait de cote delimitee. Verifier si la commune figure au decret du 29 avril 2022 modifie : l'inscription au decret ne vaut pas delimitation, mais l'absence de delimitation peut aussi traduire un document d'urbanisme non encore actualise.");
+    }
+  }
+  if (com && com.is_rnu === true) {
+    alertes.push("Commune au reglement national d'urbanisme : l'absence de document d'urbanisme ne signifie pas absence de regle.");
+  }
+  if (!r.document || !premier(r.document)) {
+    alertes.push("Aucun document d'urbanisme publie sur le GPU pour cette parcelle. Une absence sur le GPU ne prouve pas l'absence de document opposable : il peut ne pas etre dematerialise.");
+  }
+
+  return { corps, regimes_connexes, alertes };
+}
+
+function collecter(r, couches) {
+  const out = [];
+  for (const c of couches) {
+    const bloc = r[c];
+    if (bloc && Array.isArray(bloc.entites_detail)) out.push(...bloc.entites_detail);
+  }
+  return out;
+}
+
+function premier(bloc) {
+  return bloc && Array.isArray(bloc.entites_detail) && bloc.entites_detail.length
+    ? bloc.entites_detail[0] : null;
+}
+
+function pad(v) {
+  if (v === null || v === undefined || v === '') return '00';
+  const s = String(v);
+  return s.length === 1 ? '0' + s : s;
+}
+
+function lireCommune(bloc) {
+  const c = premier(bloc);
+  if (!c) return null;
+  return { insee: c.insee, nom: c.name, rnu: c.is_rnu, littorale: c.is_coastline };
+}
+
+function lireDocument(bloc) {
+  const d = premier(bloc);
+  if (!d) return null;
+  return {
+    type: d.du_type, nom: d.grid_title, partition: d.partition,
+    statut: d.gpu_status, horodatage: d.gpu_timestamp,
+    rappel: "Pour le reglement, appeler /api/document/{id}/details et lire archiveUrl. Ne jamais utiliser document/info/?partition=."
+  };
+}
+
+// ---------------------------------------------------------------------------
 async function geometrieParcelle(reference) {
   const m = reference.split('-');
   if (m.length !== 4) return { obtenu: false, cause: `Reference non decomposable : ${reference}` };
-  const [codeInsee, comAbs, section, numero] = m;
-
-  const url = `${IGN_CADASTRE}?code_insee=${codeInsee}&section=${section}&numero=${numero}&com_abs=${comAbs}&_limit=1`;
+  const [insee, comAbs, section, numero] = m;
+  const url = `${IGN_CADASTRE}?code_insee=${insee}&section=${section}&numero=${numero}&com_abs=${comAbs}&_limit=1`;
   try {
     const r = await fetch(url, { headers: { Accept: 'application/json' } });
     const j = JSON.parse(await r.text());
     const t = Array.isArray(j.features) ? j.features : [];
     if (!t.length) return { obtenu: false, cause: 'Parcelle introuvable au cadastre IGN.', code_http: r.status };
-    return {
-      obtenu: true,
-      geometrie: t[0].geometry,
-      contenance: t[0].properties ? t[0].properties.contenance : null
-    };
+    return { obtenu: true, geometrie: t[0].geometry, contenance: (t[0].properties || {}).contenance };
   } catch (e) {
     return { obtenu: false, cause: e.message };
   }
 }
 
-async function interrogerCouche(nom, cfg, geometrie) {
-  // API Carto attend la geometrie GeoJSON encodee dans le parametre geom.
+async function interroger(nom, cfg, geometrie) {
   const params = new URLSearchParams();
   params.set('geom', JSON.stringify(geometrie));
-  params.set('_limit', '100');
-
+  params.set('_limit', '500');
   const url = `${IGN_GPU}/${nom}?${params.toString()}`;
   const t0 = Date.now();
 
   try {
     const r = await fetch(url, { headers: { Accept: 'application/json' } });
     const txt = await r.text();
-
     let j = null;
     try { j = JSON.parse(txt); }
     catch {
-      return {
-        role: cfg.role, code_http: r.status, duree_ms: Date.now() - t0,
-        lecture: interpreter(r.status), reponse_non_json: txt.slice(0, 250)
-      };
+      return { role: cfg.role, code_http: r.status, duree_ms: Date.now() - t0,
+               reponse_non_json: txt.slice(0, 250) };
     }
-
     const traits = Array.isArray(j.features) ? j.features : [];
     const out = {
       role: cfg.role,
       code_http: r.status,
       lecture: interpreter(r.status),
       entites: traits.length,
-      duree_ms: Date.now() - t0
+      duree_ms: Date.now() - t0,
+      entites_detail: traits.map(f => f.properties || {})
     };
-    if (r.status !== 200) {
-      out.message = j.message || j.error || null;
-      return out;
-    }
-
-    // Vocabulaire observe : noms de champs et valeurs textuelles distinctes.
+    // Codes CNIG observes, pour lecture rapide.
     if (traits.length) {
-      out.champs = Object.keys(traits[0].properties || {});
-      out.echantillon = traits.slice(0, 5).map(f => resumer(f.properties));
-
-      const valeurs = new Set();
-      for (const f of traits) {
-        for (const v of Object.values(f.properties || {})) {
-          if (typeof v === 'string' && v.length && v.length < 120) valeurs.add(v);
-        }
+      const codes = new Set();
+      for (const p of out.entites_detail) {
+        if (p.typepsc !== undefined) codes.add(`PSC ${pad(p.typepsc)}-${pad(p.stypepsc)}`);
+        if (p.typeinf !== undefined) codes.add(`INF ${pad(p.typeinf)}-${pad(p.stypeinf)}`);
       }
-      out.valeurs_distinctes = Array.from(valeurs).slice(0, 40);
-
-      const trouves = Array.from(valeurs).filter(v =>
-        INDICES.some(i => v.toLowerCase().includes(i))
-      );
-      if (trouves.length) out.indices_trait_de_cote = trouves;
+      if (codes.size) out.codes_cnig = Array.from(codes);
     }
-
     return out;
-
   } catch (e) {
-    return { role: cfg.role, code_http: 0, lecture: "L'appel a echoue avant reponse.",
-             detail: e.message, duree_ms: Date.now() - t0 };
+    return { role: cfg.role, code_http: 0, detail: e.message, duree_ms: Date.now() - t0 };
   }
-}
-
-// Ne conserve que les champs utiles a la lecture, pour ne pas noyer la reponse.
-function resumer(p) {
-  if (!p) return null;
-  const garde = [
-    'libelle', 'libelong', 'typezone', 'typepsc', 'typeinf', 'nomfic', 'urlfic',
-    'partition', 'idurba', 'typedoc', 'datappro', 'insee', 'nom', 'idsup',
-    'txt', 'destdomi', 'stypepsc', 'stypeinf'
-  ];
-  const out = {};
-  for (const k of Object.keys(p)) {
-    if (garde.includes(k.toLowerCase())) out[k] = p[k];
-  }
-  return Object.keys(out).length ? out : p;
 }
 
 function interpreter(c) {
   if (c === 200) return 'OK';
-  if (c === 400) return 'Parametres invalides (geometrie mal formee ?).';
-  if (c === 404) return 'Couche inconnue : le nom est errone.';
-  if (c === 429) return 'Quota depasse.';
+  if (c === 400) return 'Parametres invalides.';
+  if (c === 404) return 'Couche inconnue.';
   if (c >= 500) return 'Erreur cote API Carto.';
   return `Code inattendu : ${c}`;
 }
