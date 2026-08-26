@@ -48,12 +48,28 @@ const SUJETS = {
   seisme_ppr:    { titre: 'Séisme — zonage d\'un PPR',                service: WMS_RISQUES, couche: 'PPRN_ZONE_SEISME',   ial: '2°' },
   avalanche:     { titre: 'Avalanche — zonage réglementaire',         service: WMS_RISQUES, couche: 'PPRN_ZONE_AVALANCHE', ial: '2°' },
   feu:           { titre: 'Feu de forêt — zonage réglementaire',      service: WMS_RISQUES, couche: 'PPRN_ZONE_FEU',      ial: '2°' },
-  minier:        { titre: 'Risque minier — zonage',                   service: WMS_RISQUES, couche: 'PPRM_MINIER',        ial: '3°' },
-  minier_inond:  { titre: 'Minier, inondation — zonage',              service: WMS_RISQUES, couche: 'PPRM_RISQINOND',     ial: '3°' },
+  // PPRM : la convention ne comporte que trois couches, verifiees par
+  // GetCapabilities — PPRM_MINIER, PPRM_PERIMETRE_MINIER, PPRM_ZONE_MINIER.
+  // Le zonage reglementaire est PPRM_ZONE_MINIER. PPRM_RISQINOND, retenu par
+  // analogie dans une version precedente, N'EXISTE PAS : le sondage renvoyait
+  // une exception XML, donc une carte d'apparence vide.
+  minier:        { titre: 'Risque minier — zonage réglementaire',      service: WMS_RISQUES, couche: 'PPRM_ZONE_MINIER',  ial: '3°' },
   technologique: { titre: 'Risque industriel — zonage PPRT',          service: WMS_RISQUES, couche: 'PPRT_ZONE_RISQIND',  ial: '1°' },
   icpe:          { titre: 'Installations classées',                   service: WMS_RISQUES, couche: 'INSTALLATIONS_CLASSEES_SIMPLIFIE' },
   mvt_emprises:  { titre: 'Mouvements de terrain recensés',           service: WMS_RISQUES, couche: 'MVT_EMPRISES' },
-  tri:           { titre: 'Territoire à risque important d\'inondation', service: WMS_RISQUES, couche: 'TRI_ZONE_INOND' },
+  // TRI : convention entierement differente, etablie par GetCapabilities.
+  // TRI_ZONE_INOND n'existe pas. La cartographie suit la directive Inondation :
+  // trois scenarios de probabilite, chacun decline en classes d'alea.
+  //   LIMITETRI_{scenario}_{alea}  ->  01 a 03 pour le scenario
+  //                                    01FOR fort, 02MOY moyen, 04FAI faible
+  // Le scenario 02 en alea moyen est l'alea de reference : c'est celui qui
+  // fonde le zonage reglementaire, donc le seul pertinent pour un etat des
+  // risques. Les autres restent accessibles par ?sujet= pour le rapport
+  // de synthese.
+  tri_commune:   { titre: 'Territoire à risque important d\'inondation', service: WMS_RISQUES, couche: 'TRI_COMMUNE' },
+  tri_reference: { titre: 'TRI — aléa de référence (scénario moyen)',   service: WMS_RISQUES, couche: 'LIMITETRI_02_02MOY' },
+  tri_fort:      { titre: 'TRI — aléa fort (crue fréquente)',           service: WMS_RISQUES, couche: 'LIMITETRI_01_01FOR' },
+  tri_faible:    { titre: 'TRI — aléa faible (crue exceptionnelle)',    service: WMS_RISQUES, couche: 'LIMITETRI_03_04FAI' },
   debroussail:   { titre: 'Obligations de débroussaillement',         service: WMS_IGN,     couche: 'DEBROUSSAILLEMENT',  ial: '8°' },
   parcellaire:   { titre: 'Parcellaire cadastral voisin',             service: WMS_IGN,     couche: 'CADASTRALPARCELS.PARCELLAIRE_EXPRESS' }
 };
