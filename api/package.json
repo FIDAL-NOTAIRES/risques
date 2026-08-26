@@ -1,10 +1,11 @@
 {
   "name": "risques",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "RISQUES — génération d'états des risques (ERP) et de rapports de synthèse, FIDAL Notaires",
   "dependencies": {
-    "pdf-lib": "1.17.1"
+    "pdf-lib": "1.17.1",
+    "@pdf-lib/fontkit": "1.1.1"
   }
 }
