@@ -202,7 +202,7 @@ function qualifier(d) {
     if (z >= 2) corps.push({
       cle: 'sismique', article: '5°', intitule: 'Sismicité',
       valeur: s.zoneSismicite,
-      precision: "Fiche d'information sur le risque sismique à joindre (R.125-24, 2°)."
+      precision: "Une fiche d'information sur le risque sismique doit être annexée (R. 125-24, 2°) : voir la liste des pièces à joindre."
     });
     else ecartes.push({ intitule: 'Sismicité', article: '5°',
       motif: `zone ${z} : l'obligation ne naît qu'à partir de la zone 2` });
@@ -226,7 +226,7 @@ function qualifier(d) {
     corps.push({
       cle: 'old', article: '8°', intitule: 'Obligations légales de débroussaillement',
       valeur: o.departement ? `département ${o.departement}` : 'zone assujettie',
-      precision: o.url ? `Fiche d'information à joindre : ${o.url}` : null
+      precision: "Une fiche d'information sur les obligations de débroussaillement doit être annexée : voir la liste des pièces à joindre."
     });
   } else {
     ecartes.push({ intitule: 'Obligations légales de débroussaillement',
@@ -389,6 +389,20 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
   etat.y -= 10;
   annexeSols(etat, donnees, bien);
 
+  // --- Pieces a joindre -------------------------------------------------
+  etat.y -= 16;
+  sousSection(etat, "Pièces à joindre au présent état");
+  const pieces = piecesRequises(qualif, donnees);
+  if (!pieces.length) {
+    paragraphe(etat, "Aucune pièce annexe n'est requise au titre de l'article R. 125-24.", 9.5, sans);
+  } else {
+    paragraphe(etat, "Les pièces suivantes sont exigées par l'article R. 125-24. Elles ne sont pas incorporées au présent document : elles doivent être annexées séparément.", 9, sans, CARMIN);
+    etat.y -= 4;
+    for (const p of pieces) {
+      puce(etat, `${p.intitule} — ${p.fondement}${p.source ? `. Source : ${p.source}` : ''}`, NUIT, 9);
+    }
+  }
+
   // --- Methode ----------------------------------------------------------
   etat.y -= 16;
   sousSection(etat, "Sources et méthode");
@@ -402,6 +416,46 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
 
   pieds(etat);
   return doc.save();
+}
+
+// ===========================================================================
+// PIECES ANNEXES EXIGEES PAR R.125-24
+// ===========================================================================
+// Le document ne peut pas annoncer une piece "a joindre" sans la joindre ni
+// dire ou la trouver : ce serait pire que de n'en rien dire. Cette fonction
+// dresse la liste des pieces reellement exigees compte tenu de la
+// qualification, avec leur fondement et leur source.
+function piecesRequises(qualif, d) {
+  const out = [];
+
+  if (qualif.corps.some(c => c.cle === 'sismique')) {
+    out.push({
+      intitule: "Fiche d'information sur le risque sismique",
+      fondement: 'R. 125-24, 2°',
+      source: 'georisques.gouv.fr, rubrique « m\'informer sur un risque »'
+    });
+  }
+
+  if (qualif.corps.some(c => c.cle === 'old')) {
+    const o = d.old.items[0] || {};
+    out.push({
+      intitule: "Fiche d'information sur les obligations de débroussaillement",
+      fondement: 'R. 125-23, 8°',
+      source: o.url || 'georisques.gouv.fr'
+    });
+  }
+
+  for (const c of qualif.corps) {
+    if (['pprn', 'pprt', 'pprm'].includes(c.cle)) {
+      out.push({
+        intitule: `Extrait du document graphique et du règlement du plan « ${c.valeur} »`,
+        fondement: 'R. 125-24, 1°',
+        source: `Géorisques, /api/v2/gaspar/${c.cle}/${c.idGaspar}/documents`
+      });
+    }
+  }
+
+  return out;
 }
 
 // ===========================================================================
@@ -682,12 +736,24 @@ function annexeCatnat(e, d) {
     e.page.drawText(`${alea} — ${liste.length}`, { x: MARGE.g, y: e.y - 10, size: 9.5, font: e.F.sansG, color: CANARD });
     e.y -= 18;
     entete(e, ['Code national', 'Début', 'Fin', 'Arrêté du', 'Journal officiel'], [130, 80, 80, 85, 90]);
-    for (const a of liste.sort((x, y) => (y.date_debut_evt || '').localeCompare(x.date_debut_evt || ''))) {
+    // Tri du plus recent au plus ancien. Les dates arrivent au format
+    // jour/mois/annee : une comparaison de chaines trierait par jour avant
+    // l'annee. Conversion en cle triable.
+    const ordonnee = liste.slice().sort((x, y) => cle(y.date_debut_evt) - cle(x.date_debut_evt));
+    for (const a of ordonnee) {
       rangee(e, [a.code_national_catnat, a.date_debut_evt, a.date_fin_evt,
                  a.date_publication_arrete, a.date_publication_jo], [130, 80, 80, 85, 90]);
     }
     e.y -= 10;
   }
+}
+
+// Convertit jj/mm/aaaa en nombre aaaammjj, comparable.
+function cle(date) {
+  if (!date) return 0;
+  const m = String(date).split('/');
+  if (m.length !== 3) return 0;
+  return Number(m[2]) * 10000 + Number(m[1]) * 100 + Number(m[0]);
 }
 
 function annexeSols(e, d, bien) {
@@ -701,7 +767,10 @@ function annexeSols(e, d, bien) {
   if (icpe.length) {
     entete(e, ['Raison sociale', 'Régime', 'État'], [250, 110, 120]);
     for (const x of icpe.slice(0, 40)) {
-      rangee(e, [x.raisonSociale || '—', x.regime || '—', x.etatActivite || 'non précisé'], [250, 110, 120]);
+      const nom = x.raisonSociale
+        ? x.raisonSociale
+        : `établissement non dénommé (AIOT ${x.codeAIOT || 'inconnu'})`;
+      rangee(e, [nom, x.regime || '—', x.etatActivite || 'non précisé'], [250, 110, 120]);
     }
     e.y -= 6;
     paragraphe(e, "La majorité des établissements de cette base ne porte pas de coordonnées individuelles mais celles du centre de la commune : aucune distance au bien n'est donc indiquée, plutôt qu'une distance fausse.", 8, e.F.sans, GRIS);
@@ -719,6 +788,15 @@ function annexeSols(e, d, bien) {
     for (const { x, m } of avec.slice(0, 45)) {
       rangee(e, [x.nom || x.activitePrincipale || '—', x.statut || '—',
                  m === null ? 'non localisé' : `${m} m`], [270, 100, 80]);
+    }
+    // Le rayon est applique par la source depuis l'emprise de la parcelle,
+    // tandis que la distance affichee est mesuree depuis son centroide. Des
+    // valeurs superieures au rayon demande sont donc normales : les taire
+    // laisserait une incoherence apparente dans le document.
+    const dehors = avec.filter(v => v.m !== null && v.m > 500).length;
+    if (dehors) {
+      e.y -= 6;
+      paragraphe(e, `Le rayon de 500 mètres est appliqué par la source depuis les limites de la parcelle, tandis que les distances ci-dessus sont mesurées depuis son centroïde. ${dehors} site(s) apparaissent donc au-delà de 500 mètres du centroïde tout en se trouvant dans le rayon retenu depuis les limites du bien.`, 8, e.F.sans, GRIS);
     }
   } else {
     paragraphe(e, "Aucun site recensé dans le rayon retenu.", 10, e.F.serif);
