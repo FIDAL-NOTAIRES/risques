@@ -1,7 +1,0 @@
-{
-  "name": "risques",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "RISQUES — génération d'états des risques (ERP) et de rapports de synthèse, FIDAL Notaires"
-}
