@@ -67,6 +67,7 @@ export default async function handler(req, res) {
   const ref = req.query.parcelle ? req.query.parcelle.toString() : null;
   const dossier = req.query.dossier ? req.query.dossier.toString() : null;
   const avecCartes = req.query.cartes !== '0';
+  const avecPieces = req.query.pieces !== '0';
 
   if (!jeton) {
     return res.status(500).json({ resultat: 'ECHEC', cause: 'GEORISQUES_TOKEN absente.' });
@@ -87,6 +88,24 @@ export default async function handler(req, res) {
 
     const donnees = await collecter(bien, jeton);
     const qualif = qualifier(donnees);
+
+    // Pieces documentaires des plans retenus. Recuperees AVANT le rendu : la
+    // liste des pieces a joindre doit pouvoir dire si l'annexion a reussi,
+    // echoue, ou si la piece n'existe pas dans la base.
+    for (const c of qualif.corps) {
+      if (!['pprn', 'pprt', 'pprm'].includes(c.cle) || !c.idGaspar) continue;
+      c.pieces = await piecesDuPlan(c.cle, c.idGaspar, jeton);
+      if (c.pieces.reglement && avecPieces) {
+        try {
+          c.reglementOctets = await pagesDePiece(c.cle, c.idGaspar,
+                                                 c.pieces.reglement.uuid, jeton, 12 * 1048576);
+        } catch (err) {
+          c.echecAnnexion = err.message;
+        }
+      } else if (c.pieces.reglement) {
+        c.echecAnnexion = 'annexion désactivée par paramètre';
+      }
+    }
 
     if (req.query.debug === '1') {
       return res.status(200).json({
@@ -146,6 +165,65 @@ async function collecter(bien, jeton) {
   d.zonage  = await gpu('zone-urba', bien.geometrie);
 
   return d;
+}
+
+// ---------------------------------------------------------------------------
+// Pieces documentaires d'un plan de prevention.
+// Les types sont normalises cote Georisques : « Reglement du PPR » et « Plan
+// de zonages reglementaires » sont exactement les deux pieces visees par
+// R.125-24. Elles portent chacune un identifiant et une URL unitaire.
+//
+// L'archive complete n'est PAS utilisable : celle du PPRI de Tours pese
+// 40,5 Mo et sa recuperation prend plus de cinquante secondes, au-dela de la
+// duree d'execution d'une fonction. L'annexion doit donc etre selective.
+// ---------------------------------------------------------------------------
+async function piecesDuPlan(famille, idGaspar, jeton) {
+  const r = await appelJson(`/api/v2/gaspar/${famille}/${idGaspar}`, jeton);
+  if (!r.ok || !Array.isArray(r.json.documents)) return { reglement: null, zonages: [], toutes: [] };
+
+  const toutes = r.json.documents.map(x => ({
+    type: (x.type || '').trim(),
+    titre: x.titre || null,
+    uuid: x.uuidDocument || null
+  }));
+
+  return {
+    // Dates utiles pour distinguer le 2° (plan approuve) du 4° (plan prescrit).
+    aleas: ((r.json.communes || [])[0] || {}).aleas || [],
+    lien: ((r.json.communes || [])[0] || {}).lienPpr || null,
+    reglement: toutes.find(x => x.type === 'Règlement du PPR') || null,
+    zonages: toutes.filter(x => x.type === 'Plan de zonages réglementaires'),
+    toutes
+  };
+}
+
+async function appelJson(chemin, jeton) {
+  try {
+    const r = await fetch(`${GEO}${chemin}`, {
+      headers: { Authorization: `Bearer ${jeton}`, Accept: 'application/json' }
+    });
+    if (r.status !== 200) return { ok: false, code: r.status };
+    return { ok: true, json: await r.json() };
+  } catch (e) {
+    return { ok: false, erreur: e.message };
+  }
+}
+
+// Recupere une piece unitaire et n'en garde que les pages, si c'est un PDF.
+async function pagesDePiece(famille, idGaspar, uuid, jeton, limite) {
+  const url = `${GEO}/api/v2/gaspar/${famille}/${idGaspar}/documents/${uuid}`;
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${jeton}`, Accept: 'application/pdf' }
+  });
+  if (r.status !== 200) throw new Error(`pièce indisponible (HTTP ${r.status})`);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  if (buf.length < 5 || buf[0] !== 0x25 || buf[1] !== 0x50) {
+    throw new Error('la pièce reçue n\'est pas un PDF');
+  }
+  if (buf.length > limite) {
+    throw new Error(`pièce trop volumineuse (${Math.round(buf.length / 1048576)} Mo)`);
+  }
+  return buf;
 }
 
 async function v2(chemin, criteres, jeton) {
@@ -385,7 +463,7 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
   // --- Annexe 3 : pollution des sols ------------------------------------
   nouvellePage(etat);
   section(etat, "Annexe 3 — Pollution des sols et installations classées");
-  paragraphe(etat, "Rayon de 500 mètres mesuré depuis le centroïde de la parcelle. Aucun filtre implicite n'est appliqué : ni sur le statut, ni sur l'ancienneté. Les établissements de régime « Non ICPE » sont écartés, cette exclusion étant énoncée ici.", 9.5, sans, GRIS);
+  paragraphe(etat, "Rayon de 500 mètres appliqué par la source depuis les limites de la parcelle ; les distances indiquées sont mesurées depuis son centroïde. Aucun filtre implicite n'est appliqué : ni sur le statut, ni sur l'ancienneté. Les établissements de régime « Non ICPE » sont écartés, cette exclusion étant énoncée ici.", 9.5, sans, GRIS);
   etat.y -= 10;
   annexeSols(etat, donnees, bien);
 
@@ -396,10 +474,10 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
   if (!pieces.length) {
     paragraphe(etat, "Aucune pièce annexe n'est requise au titre de l'article R. 125-24.", 9.5, sans);
   } else {
-    paragraphe(etat, "Les pièces suivantes sont exigées par l'article R. 125-24. Elles ne sont pas incorporées au présent document : elles doivent être annexées séparément.", 9, sans, CARMIN);
+    paragraphe(etat, "Les pièces suivantes sont exigées par l'article R. 125-24.", 9, sans, GRIS);
     etat.y -= 4;
     for (const p of pieces) {
-      puce(etat, `${p.intitule} — ${p.fondement}${p.source ? `. Source : ${p.source}` : ''}`, NUIT, 9);
+      puce(etat, `${p.intitule} — ${p.fondement}${p.etat ? `. ${p.etat}` : ''}`, NUIT, 9);
     }
   }
 
@@ -415,16 +493,43 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
   ]) puce(etat, t, GRIS, 8.5);
 
   pieds(etat);
+
+  // --- Annexion des reglements de PPR -----------------------------------
+  // Faite apres la pose des pieds de page : les pages annexees viennent d'un
+  // autre document et ne doivent pas recevoir notre pagination, qui ne leur
+  // correspondrait pas.
+  for (const c of qualif.corps) {
+    if (!c.reglementOctets) continue;
+    try {
+      const source = await PDFDocument.load(c.reglementOctets, { ignoreEncryption: true });
+      const copiees = await doc.copyPages(source, source.getPageIndices());
+      const inter = doc.addPage([PAGE.l, PAGE.h]);
+      inter.drawText('Pièce annexée', {
+        x: MARGE.g, y: PAGE.h - MARGE.haut - 18, size: 15, font: serifG, color: NUIT });
+      inter.drawText(`Règlement du plan « ${c.valeur} »`, {
+        x: MARGE.g, y: PAGE.h - MARGE.haut - 42, size: 10.5, font: sans, color: CANARD });
+      inter.drawText(`${copiees.length} page(s) — source : Géorisques, identifiant ${c.idGaspar}`, {
+        x: MARGE.g, y: PAGE.h - MARGE.haut - 62, size: 8.5, font: sans, color: GRIS });
+      inter.drawText("Les pages suivantes sont reproduites telles que publiées et ne portent pas la pagination du présent état.", {
+        x: MARGE.g, y: PAGE.h - MARGE.haut - 82, size: 8.5, font: sans, color: GRIS });
+      for (const p of copiees) doc.addPage(p);
+    } catch (err) {
+      c.echecAnnexion = err.message;
+    }
+  }
+
   return doc.save();
 }
 
 // ===========================================================================
 // PIECES ANNEXES EXIGEES PAR R.125-24
 // ===========================================================================
-// Le document ne peut pas annoncer une piece "a joindre" sans la joindre ni
-// dire ou la trouver : ce serait pire que de n'en rien dire. Cette fonction
-// dresse la liste des pieces reellement exigees compte tenu de la
-// qualification, avec leur fondement et leur source.
+// Le document ne peut pas annoncer une piece "a joindre" sans dire si elle est
+// jointe, absente de la base, ou a chercher ailleurs. La disponibilite est en
+// effet inegale : le PPRI de Tours publie son reglement et quatre plans de
+// zonage, celui de Blois ne publie que trois arretes, ni reglement ni zonage.
+// L'exigence de R.125-24 n'est donc pas toujours satisfiable, et le taire
+// serait la pire des reponses.
 function piecesRequises(qualif, d) {
   const out = [];
 
@@ -432,7 +537,7 @@ function piecesRequises(qualif, d) {
     out.push({
       intitule: "Fiche d'information sur le risque sismique",
       fondement: 'R. 125-24, 2°',
-      source: 'georisques.gouv.fr, rubrique « m\'informer sur un risque »'
+      etat: "À annexer séparément. Source : georisques.gouv.fr, rubrique « m'informer sur un risque »."
     });
   }
 
@@ -441,16 +546,44 @@ function piecesRequises(qualif, d) {
     out.push({
       intitule: "Fiche d'information sur les obligations de débroussaillement",
       fondement: 'R. 125-23, 8°',
-      source: o.url || 'georisques.gouv.fr'
+      etat: `À annexer séparément. Source : ${o.url || 'georisques.gouv.fr'}.`
     });
   }
 
   for (const c of qualif.corps) {
-    if (['pprn', 'pprt', 'pprm'].includes(c.cle)) {
+    if (!['pprn', 'pprt', 'pprm'].includes(c.cle)) continue;
+    const p = c.pieces || {};
+
+    // 1° extrait du document graphique
+    out.push({
+      intitule: `Extrait du document graphique situant le bien dans le zonage du plan « ${c.valeur} »`,
+      fondement: 'R. 125-24, 1°',
+      etat: "Satisfaite par la cartographie du présent état : le zonage réglementaire y est reporté sur le fond de plan et le contour cadastral du bien y figure. Cet extrait est centré sur le bien, ce qu'aucune planche préfectorale ne permet."
+        + (p.zonages && p.zonages.length
+            ? ` Les ${p.zonages.length} planche(s) officielle(s) du zonage restent consultables auprès de la préfecture${p.lien ? ` : ${p.lien}` : ''}.`
+            : '')
+    });
+
+    // 2° extrait du reglement concernant le bien
+    if (c.echecAnnexion) {
       out.push({
-        intitule: `Extrait du document graphique et du règlement du plan « ${c.valeur} »`,
+        intitule: `Règlement du plan « ${c.valeur} »`,
         fondement: 'R. 125-24, 1°',
-        source: `Géorisques, /api/v2/gaspar/${c.cle}/${c.idGaspar}/documents`
+        etat: `Annexion impossible : ${c.echecAnnexion}. À joindre manuellement${p.lien ? ` — ${p.lien}` : ''}.`
+      });
+    } else if (p.reglement) {
+      out.push({
+        intitule: `Règlement du plan « ${c.valeur} »`,
+        fondement: 'R. 125-24, 1°',
+        etat: `Annexé au présent document. La zone applicable au bien est ${
+          (c.zones || []).map(z => z.code).join(', ') || 'indiquée au corps'
+        } : s'y reporter dans le règlement.`
+      });
+    } else {
+      out.push({
+        intitule: `Règlement du plan « ${c.valeur} »`,
+        fondement: 'R. 125-24, 1°',
+        etat: `Non publié dans la base Géorisques pour ce plan. À obtenir auprès de la préfecture${p.lien ? ` : ${p.lien}` : ''}.`
       });
     }
   }
