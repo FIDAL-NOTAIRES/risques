@@ -1,9 +1,0 @@
-{
-  "name": "registre",
-  "version": "1.0.0",
-  "private": true,
-  "description": "REGISTRE — suivi des formalités FIDAL Notaires (registre des demandes, mémo MARTEAU § 8)",
-  "dependencies": {
-    "@neondatabase/serverless": "^0.10.4"
-  }
-}
