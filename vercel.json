@@ -2,6 +2,7 @@
   "functions": {
     "api/erp.mjs":      { "maxDuration": 60 },
     "api/synthese.mjs": { "maxDuration": 60 },
-    "api/carte.mjs":    { "maxDuration": 30 }
+    "api/carte.mjs":    { "maxDuration": 30 },
+    "api/sonde.mjs":    { "maxDuration": 60 }
   }
 }
