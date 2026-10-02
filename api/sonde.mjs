@@ -51,6 +51,9 @@ const MOTS_COUCHES = [
 // 1. Documentation publiee
 // ---------------------------------------------------------------------------
 const DOCS = [
+  // Adresses relevees dans api/test.mjs (chemins reels de la documentation).
+  `${GEO}/api/v3/api-docs/georisques-api-v2`,
+  `${GEO}/api/v3/api-docs/georisques-api-v1`,
   `${GEO}/api/v1/swagger.json`,
   `${GEO}/api/v2/swagger.json`,
   `${GEO}/v3/api-docs`,
@@ -230,8 +233,8 @@ async function documentation(jeton) {
           : null,
         tous: chemins
       });
-      // Une description complete suffit : inutile d'interroger les suivantes.
-      if (chemins && chemins.length) break;
+      // On poursuit : la v1 et la v2 sont publiees separement et les quatre
+      // rubriques muettes peuvent relever de l'une ou de l'autre.
     } catch (e) {
       out.push({ url, code: null, erreur: e.message });
     }
