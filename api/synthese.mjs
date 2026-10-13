@@ -801,10 +801,10 @@ async function cellule(e, r, x, bien, imgs, marge) {
   e.page.drawRectangle({ x, y: yHaut - CARTE_H, width: CELL_L, height: CARTE_H, borderColor: GRIS, borderWidth: 0.6 });
 
   // Legende de la carte
-  const emp = communal ? MARGE_COMMUNALE * 2 : regional ? MARGE_REGIONALE * 2 : marge * 2;
+  const emp = Math.round(((imgs && imgs.marge) || (communal ? MARGE_COMMUNALE : regional ? MARGE_REGIONALE : marge)) * 2);
   let leg = `Emprise ${emp >= 1000 ? `${(emp / 1000).toFixed(1).replace('.0', '')} km` : `${emp} m`}`;
   if (!r.carte || !r.carte.couche) leg += ' — aucune couche nationale : carte de situation';
-  else if (imgs && imgs.sur === null) leg += ` — couche ${r.carte.couche} non obtenue`;
+  else if (imgs && imgs.sur === null) leg += imgs.etat === 'vide' ? ' — aucun zonage de cette couche dans l\'emprise' : ` — couche ${r.carte.couche} non obtenue`;
   else leg += ` — couche ${r.carte ? r.carte.couche : ''}`;
   e.page.drawText(tronquer(leg, e.F.sans, 6.8, CELL_L), { x, y: yHaut - CARTE_H - 9, size: 6.8, font: e.F.sans, color: GRIS });
 
@@ -868,16 +868,35 @@ async function chargerCartes(bien, rubriques, marge) {
   taches.push(image(getMap(WMS_IGN, 'HR.ORTHOIMAGERY.ORTHOPHOTOS', bboxPlan, { l: 900, h: Math.round(900 * 0.56) }, false)).then(b => { garde.ortho = { fond: b, sur: null }; }).catch(() => { garde.ortho = { fond: null, sur: null }; }));
   taches.push(image(getMap(WMS_IGN, 'GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', bboxCommune, PX, false)).then(b => { garde.commune = { fond: b, sur: null }; }).catch(() => { garde.commune = { fond: null, sur: null }; }));
 
+  // 13/10/2026 : les couches du BRGM ne se dessinent qu'en deçà d'une certaine
+  // échelle (argiles invisibles au 1/2 000 du rapport, visibles au 1/7 400). Si la
+  // couche revient VIDE au cadrage serré, on élargit (×4 ≈ 1/8 000, puis ×12 ≈
+  // 1/25 000) et on garde le premier cadre où elle se dessine. Vide à toutes les
+  // échelles = aucun zonage dans l'emprise (mention honnête) ; seule une panne du
+  // serveur garde la mention « non obtenue ».
   const parRubrique = {};
+  const ESCALIER = [1, 4, 12];
   for (const r of rubriques) {
     const communal = r.carte && r.carte.echelle === 'commune';
     const regional = r.carte && r.carte.echelle === 'regionale';
-    const bbox = communal ? bboxCommune : regional ? bboxRegion : bboxRub;
-    parRubrique[r.numero] = { fond: null, sur: null, bbox };
-    taches.push(image(getMap(WMS_IGN, 'GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', bbox, PX, false)).then(b => { parRubrique[r.numero].fond = b; }).catch(() => {}));
-    if (r.carte && r.carte.couche) {
-      taches.push(image(getMap(r.carte.service, r.carte.couche, bbox, PX, true)).then(b => { parRubrique[r.numero].sur = b; }).catch(() => {}));
-    }
+    const fixe = communal || regional || !(r.carte && r.carte.couche);
+    const margeDe = k => communal ? MARGE_COMMUNALE : regional ? MARGE_REGIONALE : marge * k;
+    const bbox0 = communal ? bboxCommune : regional ? bboxRegion : bboxRub;
+    parRubrique[r.numero] = { fond: null, sur: null, bbox: bbox0, marge: margeDe(1), etat: null };
+    taches.push((async () => {
+      const cellule = parRubrique[r.numero];
+      if (r.carte && r.carte.couche) {
+        for (const k of (fixe ? [1] : ESCALIER)) {
+          const bbox = k === 1 ? bbox0 : emprise(bien.centre, margeDe(k), PX);
+          try {
+            const b = await image(getMap(r.carte.service, r.carte.couche, bbox, PX, true));
+            if (b) { Object.assign(cellule, { sur: b, bbox, marge: margeDe(k), etat: 'ok' }); break; }
+            cellule.etat = 'vide';
+          } catch (e) { cellule.etat = 'erreur'; break; }
+        }
+      }
+      try { cellule.fond = await image(getMap(WMS_IGN, 'GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', cellule.bbox, PX, false)); } catch (e) {}
+    })());
   }
   await Promise.all(taches);
   // Le plan de la garde se charge en deux temps ; si le fond a echoue avant
