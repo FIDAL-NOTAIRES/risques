@@ -470,7 +470,10 @@ function construireRubriques(d, qualif, bien) {
     // nappeParCouleur), d'après la légende officielle ; formule validée par JFD.
     const mentionNappe = "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.";
     const precision = "Niveau lu sur la carte nationale de sensibilité aux remontées de nappe, à l'échelle d'environ 1/150 000 (un point de la carte couvre une quarantaine de mètres) : en limite de zone, la lecture est indicative et se vérifie sur la carte jointe.";
-    if (!d.nappe.obtenu) R.push(nonRenseigne(r, 'BRGM (remontée de nappe)', d.nappe.source && d.nappe.source.motif ? d.nappe.source.motif : null));
+    if (!d.nappe.obtenu) {
+      R.push(nonRenseigne(r, 'BRGM (remontée de nappe)', d.nappe.source && d.nappe.source.motif ? d.nappe.source.motif : null));
+      if (d.nappe.source && d.nappe.source.diag) r.diagnostic = d.nappe.source.diag;   // visible dans ?debug=1, pas dans le PDF
+    }
     else {
       const x = d.nappe.items[0];
       r.donnees = [['Classe BRGM', `${x.classe} — ${x.libelle}`]];
