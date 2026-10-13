@@ -438,7 +438,8 @@ function construireRubriques(d, qualif, bien) {
       const c = parseInt(x.codeExposition, 10);
       r.statut = c >= 1 ? 'concerne' : 'non_concerne';
       r.phrase = c >= 1
-        ? `Exposition ${x.exposition} au retrait-gonflement des argiles (niveau ${c} sur 3)${c >= 2 ? ' : étude géotechnique préalable obligatoire avant construction' : ''}.`
+        // 13/10/2026 : la source livre déjà « Exposition moyenne » ; on ne répète pas le mot
+        ? `${/^exposition/i.test(String(x.exposition)) ? String(x.exposition) : `Exposition ${x.exposition}`} au retrait-gonflement des argiles (niveau ${c} sur 3)${c >= 2 ? ' : étude géotechnique préalable obligatoire avant construction' : ''}.`
         : 'Exposition nulle ou non cartographiée au retrait-gonflement des argiles.';
       r.donnees = [['Exposition', `${x.exposition} (${c} sur 3)`]];
       r.detail = ["Hors périmètre de l'obligation IAL, mais retenu pour son intérêt pratique : en zone d'exposition moyenne ou forte, une étude géotechnique préalable est obligatoire à la vente d'un terrain constructible et avant tout projet de construction (loi ELAN). Les sinistres « sécheresse » relèvent du régime des catastrophes naturelles."];
