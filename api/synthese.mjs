@@ -2,24 +2,25 @@
 //
 // RAPPORT DE SYNTHESE EXHAUSTIF — document de CONSEIL, distinct de l'etat
 // des risques, qui reste ferme. La ou l'ERP ne restitue que les rubriques
-// relevant de l'obligation, la synthese affiche les SEIZE rubriques, y
+// relevant de l'obligation, la synthese affiche les QUINZE rubriques, y
 // compris celles ou le bien n'est pas concerne, pour tracer la diligence.
 //
-// LES SEIZE RUBRIQUES, DANS L'ORDRE REGLEMENTAIRE (tranche le 16/09/2026)
+// LES QUINZE RUBRIQUES, DANS L'ORDRE REGLEMENTAIRE (16/09/2026 ; le 13/10/2026,
+// CASIAS fondu dans la rubrique 9 « Sites et sols pollues », en troisieme bloc)
 //   Regime IAL (L.125-5, R.125-23)
 //     1  PPRT approuve                         5  Sismicite
 //     2  PPRN approuve                         6  Radon
 //     3  PPRM approuve                         7  Recul du trait de cote
 //     4  Perimetre mis a l'etude (prescrit)    8  Debroussaillement (OLD)
 //   Pollution des sols (L.125-6, L.125-7)
-//     9  SIS          10  ICPE          11  CASIAS
+//     9  Sites et sols pollues (SIS, BASOL, CASIAS)      10  ICPE
 //   Nuisances sonores aeriennes
-//    12  Plan d'exposition au bruit
+//    11  Plan d'exposition au bruit
 //   Information complementaire hors IAL
-//    13  Retrait-gonflement des argiles     14  Remontee de nappe
-//    15  Canalisations de matieres dangereuses
+//    12  Retrait-gonflement des argiles     13  Remontee de nappe
+//    14  Canalisations de matieres dangereuses
 //   Sinistralite
-//    16  Arretes de catastrophe naturelle (carte COMMUNALE)
+//    15  Arretes de catastrophe naturelle (carte COMMUNALE)
 //
 // STRUCTURE (tranchee les 15 et 16/09/2026)
 //   - page de garde : plan cadastral avec la parcelle colorisee en carmin,
@@ -136,7 +137,7 @@ export default async function handler(req, res) {
 }
 
 // ===========================================================================
-// CONSTRUCTION DES SEIZE RUBRIQUES
+// CONSTRUCTION DES QUINZE RUBRIQUES
 // ===========================================================================
 // Chaque rubrique : { numero, cle, intitule, regime, fondement, statut,
 //   phrase, donnees: [[etiquette, valeur]], detail: [paragraphes],
@@ -330,8 +331,17 @@ function construireRubriques(d, qualif, bien) {
 
   // -- 9 SIS -----------------------------------------------------------------------
   {
-    const r = base(9, 'sis', "Secteur d'information sur les sols", 'Pollution des sols', 'L. 125-6 et L. 125-7 code de l\'environnement');
-    r.carte = COUCHES_SYNTHESE.sis;
+    // 13/10/2026 — FUSION tranchée par JFD : une seule rubrique « Sites et sols
+    // pollués » en TROIS BLOCS, dans l'ordre de portée juridique (arbitrage du
+    // 26/09/2026) : SIS, BASOL, puis CASIAS (ex-BASIAS). Le bloc CASIAS INFORME
+    // sans jamais faire passer la rubrique en « concerné » à lui seul : dans une
+    // ville, presque chaque bien a un ancien garage à moins de 500 mètres, et le
+    // signal fort (SIS opposable) ne doit pas être noyé sous le signal faible.
+    // La liste complète des anciens sites part en tableau, en annexe.
+    const r = base(9, 'sis', 'Sites et sols pollués', 'Pollution des sols', 'L. 125-6 et L. 125-7 code de l\'environnement');
+    r.carte = { service: COUCHES_SYNTHESE.sis.service, couche: 'SSP_CLASSIFICATION_SIS,SSP_INSTRUCTION,SSP_ETABLISSEMENT' };
+    const casOk = d.casias && d.casias.ok;
+    const casiasTries = casOk ? d.casias.items.map(x => ({ x, m: distance(bien.centre, x.geom) })).sort((a, b) => (a.m ?? 1e9) - (b.m ?? 1e9)) : [];
     // 13/10/2026 — arbitrage du 26/09/2026 : les sources des sols pollués se CUMULENT
     // en blocs distincts, dans l'ordre de portée juridique ; chaque bloc donne sa
     // propre réponse, « aucun résultat » compris ; une source muette donne « source
@@ -348,6 +358,11 @@ function construireRubriques(d, qualif, bien) {
       : proches.length ? proches.map(x => `${x.nom || 'site'} à ${x.distance} m (${x.statut || 'statut non précisé'})`).join(' ; ')
       : d.basol.items.length ? `aucun site à moins de 500 m ; ${d.basol.items.length} sur la commune, le plus proche à ${d.basol.items[0].distance ?? '—'} m`
       : 'aucun site sur la commune']);
+    r.donnees.push(['Anciens sites industriels (CASIAS, inventaire historique)', !casOk ? 'source indisponible'
+      : casiasTries.length ? `${casiasTries.length} dans un rayon de 500 m${casiasTries[0].m != null ? `, le plus proche à ${casiasTries[0].m} m (${casiasTries[0].x.nom || casiasTries[0].x.activitePrincipale || 'site non dénommé'})` : ''} — liste en annexe`
+      : 'aucun dans un rayon de 500 m']);
+    if (casiasTries.length) r.table = { colonnes: ['Ancien site (CASIAS)', 'Statut', 'Distance'], largeurs: [270, 100, 80],
+      lignes: casiasTries.slice(0, 45).map(({ x, m }) => [x.nom || x.activitePrincipale || '—', x.statut || '—', m === null ? 'non localisé' : `${m} m`]) };
     if (!sisOk && !basolOk) { R.push(nonRenseigne(r, "Géorisques (secteurs d'information sur les sols, BASOL)")); }
     else {
       r.detail = [];
@@ -362,10 +377,12 @@ function construireRubriques(d, qualif, bien) {
         r.phrase = `Le bien n'est dans aucun secteur d'information sur les sols, mais ${proches.length} site(s) BASOL se trouve(nt) à moins de 500 mètres, le plus proche à ${proches[0].distance} m.`;
       } else {
         r.statut = sisOk ? 'non_concerne' : 'non_obtenu';
-        r.phrase = sisOk ? "Le bien n'est inscrit dans aucun secteur d'information sur les sols et aucun site BASOL ne se trouve à moins de 500 mètres."
+        r.phrase = sisOk ? "Le bien n'est inscrit dans aucun secteur d'information sur les sols et aucun site BASOL ne se trouve à moins de 500 mètres" + (casiasTries.length ? ` ; ${casiasTries.length} ancien(s) site(s) industriel(s) sont recensés à proximité, pour information.` : '.')
                          : "Non renseigné, à vérifier manuellement : la source des secteurs d'information sur les sols n'a pas répondu.";
       }
-      r.detail.push("Trois sources, de portée décroissante : les SIS (opposables, à mentionner à l'acte), BASOL (sites pollués appelant une action des pouvoirs publics), puis les anciens sites industriels (CASIAS, rubrique 11), simple inventaire historique.");
+      r.detail.push("Trois sources, de portée décroissante : les SIS (opposables, à mentionner à l'acte), BASOL (sites pollués appelant une action des pouvoirs publics), puis les anciens sites industriels (CASIAS, ex-BASIAS), simple inventaire historique qui ne préjuge pas de l'existence d'une pollution et ne suffit pas, à lui seul, à rendre le bien concerné.");
+      if (casiasTries.length) r.detail.push("Anciens sites : rayon appliqué par la source depuis les limites de la parcelle, distances mesurées depuis son centroïde (des valeurs un peu supérieures à 500 m sont donc normales). Fiche par site : fiches-risques.brgm.fr/georisques/casias/SSP{identifiant}.");
+      if (!casOk) r.jaune = true;
       if (proches.length) r.detail.push('Fiches BASOL : ' + proches.map(x => x.ficheRisque).filter(Boolean).join(' ; ') + '.');
       if (!basolOk) r.jaune = true;
       R.push(r);
@@ -397,36 +414,9 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
-  // -- 11 CASIAS -------------------------------------------------------------------
+  // -- 11 Plan d'exposition au bruit ---------------------------------------------
   {
-    const r = base(11, 'casias', 'Anciens sites industriels et activités de services (rayon 500 m)', 'Pollution des sols', 'L. 125-6 code de l\'environnement (inventaire historique)');
-    r.carte = COUCHES_SYNTHESE.casias;
-    const cas = d.casias.items;
-    if (!d.casias.ok) R.push(nonObtenu(r, 'Géorisques (CASIAS)'));
-    else if (cas.length) {
-      const avec = cas.map(x => ({ x, m: distance(bien.centre, x.geom) })).sort((a, b) => (a.m ?? 1e9) - (b.m ?? 1e9));
-      const proche = avec[0];
-      r.statut = 'concerne';
-      r.phrase = `${cas.length} ancien(s) site(s) industriel(s) ou de services recensé(s) dans un rayon de 500 mètres${proche.m !== null ? `, le plus proche à ${proche.m} m` : ''}.`;
-      r.donnees = avec.slice(0, 4).map(({ x, m }) => [m === null ? 'non localisé' : `${m} m`, `${x.nom || x.activitePrincipale || 'site non dénommé'} — ${x.statut || 'statut non précisé'}`]);
-      r.detail = [
-        "L'inventaire CASIAS (ex-BASIAS) recense les sites ayant accueilli une activité potentiellement polluante, sans préjuger de l'existence d'une pollution. Fiche par site : fiches-risques.brgm.fr/georisques/casias/SSP{identifiant}.",
-        "Le rayon est appliqué par la source depuis les limites de la parcelle ; les distances ci-dessus sont mesurées depuis son centroïde. Des valeurs supérieures à 500 mètres sont donc normales."
-      ];
-      r.table = { colonnes: ['Site', 'Statut', 'Distance'], largeurs: [270, 100, 80],
-        lignes: avec.slice(0, 45).map(({ x, m }) => [x.nom || x.activitePrincipale || '—', x.statut || '—', m === null ? 'non localisé' : `${m} m`]) };
-      R.push(r);
-    } else {
-      r.statut = 'non_concerne';
-      r.phrase = 'Aucun ancien site industriel ou de services recensé dans un rayon de 500 mètres.';
-      r.detail = ["Inventaire CASIAS interrogé par référence cadastrale avec un rayon de 500 mètres."];
-      R.push(r);
-    }
-  }
-
-  // -- 12 Plan d'exposition au bruit ---------------------------------------------
-  {
-    const r = base(12, 'peb', "Plan d'exposition au bruit des aérodromes", 'Nuisances sonores aériennes', 'L. 112-6 et suivants, L. 112-11 code de l\'urbanisme');
+    const r = base(11, 'peb', "Plan d'exposition au bruit des aérodromes", 'Nuisances sonores aériennes', 'L. 112-6 et suivants, L. 112-11 code de l\'urbanisme');
     r.carte = COUCHES_SYNTHESE.peb;
     const motif = /bruit|\bpeb\b|a[ée]rodrome|a[ée]roport/i;
     const hits = [...d.supS.items, ...d.infoSurf.items].filter(p => motif.test(`${p.libelle || ''} ${p.nomsuplitt || ''} ${p.typeinf || ''} ${p.txt || ''} ${p.nomass || ''}`));
@@ -447,9 +437,9 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
-  // -- 13 Retrait-gonflement des argiles ----------------------------------------
+  // -- 12 Retrait-gonflement des argiles ----------------------------------------
   {
-    const r = base(13, 'rga', 'Retrait-gonflement des sols argileux', 'Information complémentaire', 'L. 132-4 à L. 132-9 code de la construction et de l\'habitation (loi ELAN)');
+    const r = base(12, 'rga', 'Retrait-gonflement des sols argileux', 'Information complémentaire', 'L. 132-4 à L. 132-9 code de la construction et de l\'habitation (loi ELAN)');
     r.carte = COUCHES_SYNTHESE.rga;
     const x = d.rga.items[0];
     if (!d.rga.ok) R.push(nonObtenu(r, 'Géorisques (RGA)'));
@@ -472,9 +462,9 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
-  // -- 14 Remontee de nappe ---------------------------------------------------------
+  // -- 13 Remontee de nappe ---------------------------------------------------------
   {
-    const r = base(14, 'nappe', 'Remontée de nappe', 'Information complémentaire', 'inventaire BRGM, hors obligation réglementaire');
+    const r = base(13, 'nappe', 'Remontée de nappe', 'Information complémentaire', 'inventaire BRGM, hors obligation réglementaire');
     r.carte = COUCHES_SYNTHESE.nappe;
     if (!d.nappe.obtenu) R.push(nonRenseigne(r, 'BRGM (remontée de nappe)'));
     else if (d.nappe.items.length) {
@@ -496,9 +486,9 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
-  // -- 15 Canalisations ----------------------------------------------------------------
+  // -- 14 Canalisations ----------------------------------------------------------------
   {
-    const r = base(15, 'canalisations', 'Canalisations de transport de matières dangereuses', 'Information complémentaire', 'L. 555-1 et suivants code de l\'environnement');
+    const r = base(14, 'canalisations', 'Canalisations de transport de matières dangereuses', 'Information complémentaire', 'L. 555-1 et suivants code de l\'environnement');
     r.carte = COUCHES_SYNTHESE.canalisations;
     // 13/10/2026 — arbitrages des 26/09 et 01/10/2026 : on AFFICHE LA DISTANCE au
     // tracé (approximatif), on renvoie à la MAIRIE pour l'emplacement exact, et on
@@ -515,7 +505,7 @@ function construireRubriques(d, qualif, bien) {
         ? `Une canalisation de transport de matières dangereuses traverse ou borde le bien (${x.cat_fluide || 'fluide non précisé'}).`
         : `Canalisation de transport de matières dangereuses la plus proche à ${x.distance} m du bien (${x.cat_fluide || 'fluide non précisé'})${pres.length ? '' : ' : au-delà de 500 mètres'}.`;
       r.donnees = c.items.slice(0, 5).map(i => [`${i.distance ?? '—'} m`, desc(i)]);
-      r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation enterrée. Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage.",
+      r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation (enterrée, aérienne ou en caniveau, selon l'ouvrage indiqué). Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage.",
                   `Distances mesurées du contour de la parcelle au tracé publié, dans un rayon d'environ ${Math.round(1000)} mètres.`, ...mentions,
                   'Source retenue : ' + c.source.libelle + '.'];
       R.push(r);
@@ -527,9 +517,9 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
-  // -- 16 Arretes CatNat (carte communale) --------------------------------------------
+  // -- 15 Arretes CatNat (carte communale) --------------------------------------------
   {
-    const r = base(16, 'catnat', "Arrêtés de reconnaissance de l'état de catastrophe naturelle", 'Sinistralité', 'L. 125-1 code des assurances ; R. 125-24, 5° code de l\'environnement');
+    const r = base(15, 'catnat', "Arrêtés de reconnaissance de l'état de catastrophe naturelle", 'Sinistralité', 'L. 125-1 code des assurances ; R. 125-24, 5° code de l\'environnement');
     r.carte = { ...COUCHES_SYNTHESE.catnat, echelle: 'commune' };
     const items = d.catnat.items;
     if (!d.catnat.ok) R.push(nonObtenu(r, 'Géorisques (CatNat, v1)'));
@@ -656,7 +646,7 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
   // --- Page de garde --------------------------------------------------------
   nouvellePage(e);
   titre(e, 'RAPPORT DE SYNTHÈSE — RISQUES', 20, serifG);
-  titre(e, 'seize rubriques, y compris celles où le bien n\'est pas concerné', 12.5, serif, CANARD);
+  titre(e, 'quinze rubriques, y compris celles où le bien n\'est pas concerné', 12.5, serif, CANARD);
   e.y -= 10; filet(e); e.y -= 14;
   paragraphe(e, `Établi le ${dateLongue}.`, 10, sansG);
   e.y -= 4;
@@ -701,7 +691,7 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
   }
 
   // --- Corps : quatre triptyques par page ---------------------------------------
-  section(e, "Les seize rubriques");
+  section(e, "Les quinze rubriques");
   paragraphe(e, "Pour chacune : une phrase de synthèse, les données attachées et la carte situant le bien en regard du risque. La carte est présente même hors zonage : elle sert de double vérification entre les données et les plans. Le détail réglementaire figure en annexe, atteint par le lien sous chaque carte.", 9, sans, GRIS);
   e.y -= 10;
 
