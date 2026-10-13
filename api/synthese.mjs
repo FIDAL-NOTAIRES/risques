@@ -466,24 +466,25 @@ function construireRubriques(d, qualif, bien) {
   {
     const r = base(13, 'nappe', 'Remontée de nappe', 'Information complémentaire', 'inventaire BRGM, hors obligation réglementaire');
     r.carte = COUCHES_SYNTHESE.nappe;
-    if (!d.nappe.obtenu) R.push(nonRenseigne(r, 'BRGM (remontée de nappe)'));
-    else if (d.nappe.items.length) {
+    // 13/10/2026 : niveau lu à la couleur de la carte du BRGM (lib/moisson.mjs,
+    // nappeParCouleur), d'après la légende officielle ; formule validée par JFD.
+    const mentionNappe = "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.";
+    const precision = "Niveau lu sur la carte nationale de sensibilité aux remontées de nappe, à l'échelle d'environ 1/150 000 (un point de la carte couvre une quarantaine de mètres) : en limite de zone, la lecture est indicative et se vérifie sur la carte jointe.";
+    if (!d.nappe.obtenu) R.push(nonRenseigne(r, 'BRGM (remontée de nappe)', d.nappe.source && d.nappe.source.motif ? d.nappe.source.motif : null));
+    else {
       const x = d.nappe.items[0];
-      const sens = x.sensibilite || x.classe || x.libelle || x.niveau || x.type || premiereValeur(x);
-      r.statut = 'concerne';
-      // formule validée par JFD le 13/10/2026 (vocale)
-      r.phrase = `Cette parcelle est située en zone de sensibilité à la remontée de nappe phréatique, de niveau ${sens || 'non qualifié par la source'}.`;
-      r.donnees = paires(x, 5);
+      r.donnees = [['Classe BRGM', `${x.classe} — ${x.libelle}`]];
+      if (x.classe === '0') {
+        r.statut = 'non_concerne';
+        r.phrase = "Cette parcelle n'est pas située en zone sensible aux remontées de nappe phréatique (ni débordement de nappe, ni inondation de cave).";
+      } else {
+        r.statut = 'concerne';
+        r.phrase = `Cette parcelle est située en zone de sensibilité à la remontée de nappe phréatique, de niveau « ${x.niveau} ».`;
+        if (x.classe === '1') r.maximal = 'Zone potentiellement sujette aux débordements de nappe (niveau le plus élevé de la carte du BRGM).';
+      }
       r.detail = ["La cartographie des remontées de nappe distingue les zones potentiellement sujettes aux débordements de nappe et aux inondations de cave. Elle est indicative et ne se substitue pas à une étude hydrogéologique.",
-                  "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.",
-                  "Source retenue : " + (d.nappe.source ? d.nappe.source.libelle : '—') + '.'];
-      if (/tr[èe]s\s+forte|d[ée]bordement|forte/i.test(String(sens))) r.maximal = `Sensibilité forte aux remontées de nappe : ${sens}.`;
+                  mentionNappe, precision, 'Source retenue : ' + d.nappe.source.libelle + '.'];
       R.push(r);
-    } else {
-      // 13/10/2026 : la couche répond mais ne porte rien sous le bien. Tant qu'un
-      // témoin positif n'a pas confirmé la lecture, on ne conclut pas à l'absence
-      // (règle du 27/09/2026 : une rubrique muette n'est jamais « non concernée »).
-      R.push(nonRenseigne(r, 'BRGM (remontée de nappe)', "la couche n'a rien rendu sous le bien"));
     }
   }
 
