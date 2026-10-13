@@ -332,23 +332,42 @@ function construireRubriques(d, qualif, bien) {
   {
     const r = base(9, 'sis', "Secteur d'information sur les sols", 'Pollution des sols', 'L. 125-6 et L. 125-7 code de l\'environnement');
     r.carte = COUCHES_SYNTHESE.sis;
-    // 13/10/2026 : secteurs lus à la commune, rapprochés du contour de la parcelle
-    if (!d.sis.obtenu) R.push(nonRenseigne(r, 'Géorisques (secteurs d\'information sur les sols)'));
-    else if (d.sis.dansBien && d.sis.dansBien.length) {
-      const x = d.sis.dansBien[0];
-      r.statut = 'concerne';
-      r.phrase = `Le bien est inscrit dans un secteur d'information sur les sols : ${x.nom || x.nom_sis || 'secteur non dénommé'}.`;
-      r.donnees = [['Secteur', x.nom || '—'], ['Identifiant', x.identifiantSis || x.id_sis || '—'], ['Adresse', x.adresse || '—'],
-                   ['Mise à jour', x.dateMaj || x.date_maj || '—'], ['Fiche', x.ficheRisque || x.fiche_risque || '—']];
-      r.detail = ["Les secteurs d'information sur les sols (SIS) désignent les terrains où la connaissance de la pollution justifie, en cas de changement d'usage, une étude de sol et des mesures de gestion. Le vendeur ou le bailleur est tenu d'en informer par écrit l'acquéreur ou le locataire, et l'acte constate cette information (L. 125-7)."];
-      r.maximal = "Bien inscrit dans un secteur d'information sur les sols : information écrite obligatoire et étude de sol en cas de changement d'usage.";
-      R.push(r);
-    } else {
-      r.statut = 'non_concerne';
-      const n = d.sis.items.length;
-      r.phrase = "Le bien n'est inscrit dans aucun secteur d'information sur les sols.";
-      r.donnees = [['Secteurs sur la commune', n ? `${n}, aucun ne touche la parcelle` : 'aucun']];
-      r.detail = ["Contours des secteurs de la commune rapprochés du contour de la parcelle. L'absence de SIS ne préjuge pas de l'absence de pollution : voir les rubriques ICPE et CASIAS."];
+    // 13/10/2026 — arbitrage du 26/09/2026 : les sources des sols pollués se CUMULENT
+    // en blocs distincts, dans l'ordre de portée juridique ; chaque bloc donne sa
+    // propre réponse, « aucun résultat » compris ; une source muette donne « source
+    // indisponible », jamais une absence. Ici : SIS, puis BASOL ; les anciens sites
+    // (CASIAS, ex-BASIAS) gardent leur rubrique 11.
+    const sisOk = d.sis.obtenu, basolOk = d.basol && d.basol.obtenu;
+    const dans = sisOk ? (d.sis.dansBien || []) : [];
+    const proches = basolOk ? d.basol.items.filter(x => x.distance != null && x.distance <= 500) : [];
+    r.donnees = [];
+    r.donnees.push(["Secteurs d'information sur les sols", !sisOk ? 'source indisponible'
+      : dans.length ? `bien inscrit : ${dans.map(x => x.nom || 'secteur non dénommé').join(' ; ')}`
+      : `aucun secteur ne touche la parcelle (${d.sis.items.length ? d.sis.items.length + ' sur la commune' : 'aucun sur la commune'})`]);
+    r.donnees.push(['BASOL (action des pouvoirs publics)', !basolOk ? 'source indisponible'
+      : proches.length ? proches.map(x => `${x.nom || 'site'} à ${x.distance} m (${x.statut || 'statut non précisé'})`).join(' ; ')
+      : d.basol.items.length ? `aucun site à moins de 500 m ; ${d.basol.items.length} sur la commune, le plus proche à ${d.basol.items[0].distance ?? '—'} m`
+      : 'aucun site sur la commune']);
+    if (!sisOk && !basolOk) { R.push(nonRenseigne(r, "Géorisques (secteurs d'information sur les sols, BASOL)")); }
+    else {
+      r.detail = [];
+      if (dans.length) {
+        const x = dans[0];
+        r.statut = 'concerne';
+        r.phrase = `Le bien est inscrit dans un secteur d'information sur les sols : ${x.nom || 'secteur non dénommé'}.`;
+        r.maximal = "Bien inscrit dans un secteur d'information sur les sols : information écrite obligatoire et étude de sol en cas de changement d'usage.";
+        r.detail.push("Les secteurs d'information sur les sols (SIS) désignent les terrains où la connaissance de la pollution justifie, en cas de changement d'usage, une étude de sol et des mesures de gestion. Le vendeur ou le bailleur est tenu d'en informer par écrit l'acquéreur ou le locataire, et l'acte constate cette information (L. 125-7).");
+      } else if (proches.length) {
+        r.statut = 'concerne';
+        r.phrase = `Le bien n'est dans aucun secteur d'information sur les sols, mais ${proches.length} site(s) BASOL se trouve(nt) à moins de 500 mètres, le plus proche à ${proches[0].distance} m.`;
+      } else {
+        r.statut = sisOk ? 'non_concerne' : 'non_obtenu';
+        r.phrase = sisOk ? "Le bien n'est inscrit dans aucun secteur d'information sur les sols et aucun site BASOL ne se trouve à moins de 500 mètres."
+                         : "Non renseigné, à vérifier manuellement : la source des secteurs d'information sur les sols n'a pas répondu.";
+      }
+      r.detail.push("Trois sources, de portée décroissante : les SIS (opposables, à mentionner à l'acte), BASOL (sites pollués appelant une action des pouvoirs publics), puis les anciens sites industriels (CASIAS, rubrique 11), simple inventaire historique.");
+      if (proches.length) r.detail.push('Fiches BASOL : ' + proches.map(x => x.ficheRisque).filter(Boolean).join(' ; ') + '.');
+      if (!basolOk) r.jaune = true;
       R.push(r);
     }
   }
@@ -481,22 +500,30 @@ function construireRubriques(d, qualif, bien) {
   {
     const r = base(15, 'canalisations', 'Canalisations de transport de matières dangereuses', 'Information complémentaire', 'L. 555-1 et suivants code de l\'environnement');
     r.carte = COUCHES_SYNTHESE.canalisations;
-    if (!d.canalisations.obtenu) R.push(nonRenseigne(r, 'BRGM (canalisations)'));
-    else if (d.canalisations.items.length) {
-      const x = d.canalisations.items[0];
-      const echelle = d.canalisations.source && d.canalisations.source.echelle === 'commune' ? 'sur la commune' : 'à proximité du bien';
-      r.statut = 'concerne';
-      r.phrase = `${d.canalisations.items.length} canalisation(s) de transport de matières dangereuses recensée(s) ${echelle}.`;
-      r.donnees = paires(x, 5);
+    // 13/10/2026 — arbitrages des 26/09 et 01/10/2026 : on AFFICHE LA DISTANCE au
+    // tracé (approximatif), on renvoie à la MAIRIE pour l'emplacement exact, et on
+    // précise que le document ne vaut pas pièce d'un permis de construire.
+    const mentions = ["La donnée publique ne donne qu'un tracé approximatif, jamais la bande de servitude exacte : l'emplacement exact de la canalisation est à demander à la MAIRIE.",
+                      "En cas de projet de construction, ce document n'a pas valeur de pièce à joindre au dossier de permis de construire : c'est une information de conseil."];
+    const c = d.canalisations;
+    if (!c.obtenu) R.push(nonRenseigne(r, 'BRGM (canalisations)'));
+    else if (c.items.length) {
+      const x = c.items[0], pres = c.items.filter(i => i.distance != null && i.distance <= 500);
+      const desc = i => `${i.cat_fluide || 'fluide non précisé'} — ${i.desc_ouv || 'ouvrage'}${i.transporteur ? `, ${i.transporteur}` : ''}`;
+      r.statut = pres.length ? 'concerne' : 'non_concerne';
+      r.phrase = x.distance === 0
+        ? `Une canalisation de transport de matières dangereuses traverse ou borde le bien (${x.cat_fluide || 'fluide non précisé'}).`
+        : `Canalisation de transport de matières dangereuses la plus proche à ${x.distance} m du bien (${x.cat_fluide || 'fluide non précisé'})${pres.length ? '' : ' : au-delà de 500 mètres'}.`;
+      r.donnees = c.items.slice(0, 5).map(i => [`${i.distance ?? '—'} m`, desc(i)]);
       r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation enterrée. Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage.",
-                  "La donnée publique ne donne qu'un tracé approximatif, jamais la bande de servitude exacte : l'emplacement exact de la canalisation est à demander à la MAIRIE.",
-                  "En cas de projet de construction, ce document n'a pas valeur de pièce à joindre au dossier de permis de construire : c'est une information de conseil.",
-                  "Source retenue : " + (d.canalisations.source ? d.canalisations.source.libelle : '—') + '.'];
+                  `Distances mesurées du contour de la parcelle au tracé publié, dans un rayon d'environ ${Math.round(1000)} mètres.`, ...mentions,
+                  'Source retenue : ' + c.source.libelle + '.'];
       R.push(r);
     } else {
-      // 13/10/2026 : une lecture SOUS le bien ne dit rien d'une canalisation voisine ;
-      // la distance au tracé reste à mesurer. Pas de conclusion d'absence.
-      R.push(nonRenseigne(r, 'BRGM (canalisations)', "aucun tracé sous le bien ; la distance au tracé le plus proche n'est pas encore mesurée"));
+      r.statut = 'non_concerne';
+      r.phrase = "Aucune canalisation de transport de matières dangereuses recensée à moins d'un kilomètre du bien.";
+      r.detail = ['Source interrogée : ' + c.source.libelle + '.', ...mentions];
+      R.push(r);
     }
   }
 
