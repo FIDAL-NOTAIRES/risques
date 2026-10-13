@@ -363,7 +363,7 @@ function construireRubriques(d, qualif, bien) {
       : d.basol.items.length ? `aucun site à moins de 500 m ; ${d.basol.items.length} sur la commune, le plus proche à ${d.basol.items[0].distance ?? '—'} m`
       : 'aucun site sur la commune']);
     r.donnees.push(['Anciens sites industriels (CASIAS, inventaire historique)', !casOk ? 'source indisponible'
-      : casiasTries.length ? `${casiasTries.length} dans un rayon de 500 m${casiasTries[0].m != null ? `, le plus proche à ${casiasTries[0].m} m (${casiasTries[0].x.nom || casiasTries[0].x.activitePrincipale || 'site non dénommé'})` : ''} — liste en annexe`
+      : casiasTries.length ? `${casiasTries.length} dans un rayon de 500 m${casiasTries[0].m != null ? `, le plus proche à ${casiasTries[0].m} m (${casiasTries[0].x.nom || casiasTries[0].x.activitePrincipale || 'site non dénommé'})` : ''} — liste complète ci-dessous`
       : 'aucun dans un rayon de 500 m']);
     if (casiasTries.length) r.table = { colonnes: ['Ancien site (CASIAS)', 'Statut', 'Distance'], largeurs: [270, 100, 80],
       lignes: casiasTries.slice(0, 45).map(({ x, m }) => [x.nom || x.activitePrincipale || '—', x.statut || '—', m === null ? 'non localisé' : `${m} m`]) };
@@ -802,7 +802,8 @@ async function cellule(e, r, x, bien, imgs, marge) {
 
   // Legende de la carte
   const emp = Math.round(((imgs && imgs.marge) || (communal ? MARGE_COMMUNALE : regional ? MARGE_REGIONALE : marge)) * 2);
-  let leg = `Emprise ${emp >= 1000 ? `${(emp / 1000).toFixed(1).replace('.0', '')} km` : `${emp} m`}`;
+  // virgule décimale à la française (13/10/2026 : « 1.2 km » relevé sur le PDF de Boulogne)
+  let leg = `Emprise ${emp >= 1000 ? `${(emp / 1000).toFixed(1).replace(/\.0$/, '').replace('.', ',')} km` : `${emp} m`}`;
   if (!r.carte || !r.carte.couche) leg += ' — aucune couche nationale : carte de situation';
   else if (imgs && imgs.sur === null) leg += imgs.etat === 'vide' ? ' — aucun zonage de cette couche dans l\'emprise' : ` — couche ${r.carte.couche} non obtenue`;
   else leg += ` — couche ${r.carte ? r.carte.couche : ''}`;
