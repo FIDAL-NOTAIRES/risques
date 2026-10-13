@@ -126,6 +126,34 @@ export default async function handler(req, res) {
           : 'aucune combinaison n\'a répondu 200',
         essais: resultats
       };
+    } else if (etape === 'verif') {
+      // 13/10/2026 : chemins de la documentation officielle, avec le PREMIER
+      // élément rendu, pour connaître les noms de champs à lire.
+      const insee = parcelle.split('-')[0];
+      const geo = await geometrie(parcelle), c = geo.obtenu ? geo.centre : null;
+      const appels = [
+        ['v2', '/api/v2/ssp/conclusions_sis', { codesParcelle: parcelle }],
+        ['v2', '/api/v2/ssp/conclusions_sis', { codesInsee: insee }],
+        ['v1', '/api/v1/ssp/conclusions_sis', { code_insee: insee }],
+        ['v2', '/api/v2/ssp', { codesParcelle: parcelle }],
+        ['v2', '/api/v2/gaspar/tri', { codesInsee: insee }],
+        ['v1', '/api/v1/gaspar/tri', { code_insee: insee }],
+        ['v1', '/api/v1/tri_zonage', c ? { latlon: `${c.lon},${c.lat}` } : null]
+      ].filter(x => x[2]);
+      const res = [];
+      for (const [v, chemin, crit] of appels) {
+        const q = new URLSearchParams(crit);
+        if (v === 'v2') { q.set('pageNumber', '0'); q.set('pageSize', '5'); } else { q.set('page', '1'); q.set('page_size', '5'); }
+        try {
+          const r = await appel(`${GEO}${chemin}?${q}`, { headers: { Accept: 'application/json',
+            ...(v === 'v2' ? { Authorization: `Bearer ${jeton}` } : {}) } });
+          const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+          const liste = j ? (j.content || j.data || (Array.isArray(j) ? j : null)) : null;
+          res.push({ chemin, criteres: crit, code: r.status, nombre: j ? (j.totalElements ?? j.results ?? (liste ? liste.length : null)) : null,
+                     premier: liste && liste[0] ? liste[0] : null, brut: liste ? undefined : t.slice(0, 300) });
+        } catch (e) { res.push({ chemin, criteres: crit, erreur: e.message }); }
+      }
+      sortie = { etape, parcelle, resultats: res };
     } else if (etape === 'couches') {
       const service = (q.service || 'brgm').toString();
       if (!SERVICES_WMS[service]) {
@@ -252,19 +280,19 @@ async function essayer({ rubrique, version, chemin, forme, criteres }, jeton) {
 // Le catalogue de l'IGN peut peser plusieurs megaoctets : delai porte a 25 s
 // pour cette seule etape, qui ne fait qu'un appel.
 async function couchesDuService(service) {
+  // 13/10/2026 : la première lecture rendait zéro couche pour le BRGM. On rend
+  // désormais aussi le type de la réponse et son début, et on accepte les
+  // balises préfixées (<wms:Name>) que certains serveurs emploient.
   const url = `${service}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities`;
   try {
-    const r = await fetch(url, { headers: { Accept: 'application/xml' }, signal: AbortSignal.timeout(25000) });
-    if (r.status !== 200) return { code: r.status };
+    const r = await appel(url);
+    const type = r.headers.get('content-type') || '';
     const xml = await r.text();
-    const uniques = [...new Set([...xml.matchAll(/<Name>([^<]{2,120})<\/Name>/g)].map(m => m[1]))];
-    return {
-      code: 200,
-      total: uniques.length,
-      retenues: uniques.filter(n => MOTS_COUCHES.some(k => n.toLowerCase().includes(k))).slice(0, 120)
-    };
+    const uniques = [...new Set([...xml.matchAll(/<(?:\w+:)?Name>([^<]{2,120})<\/(?:\w+:)?Name>/g)].map(m => m[1]))];
+    const retenues = uniques.filter(n => MOTS_COUCHES.some(m => n.toLowerCase().includes(m)));
+    return { code: r.status, type, taille: xml.length, debut: xml.slice(0, 400), total: uniques.length, retenues };
   } catch (e) {
-    return { code: null, erreur: e.message };
+    return { erreur: e.message };
   }
 }
 
