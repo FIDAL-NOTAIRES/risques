@@ -177,12 +177,62 @@ export default async function handler(req, res) {
         } catch (e) { res2.push({ couche, format: fmt, erreur: e.message }); }
       }
       sortie = { etape, parcelle, resultats: res2 };
+    } else if (etape === 'wfs') {
+      // 13/10/2026 : tracés de canalisation AUTOUR du bien (rayon ~1 km), pour en
+      // mesurer la distance. Essai du service WFS du même serveur BRGM.
+      const geo = await geometrie(parcelle);
+      if (!geo.obtenu) return res.status(200).json({ resultat: 'ECHEC', cause: geo.cause });
+      const { lon, lat } = geo.centre, dLat = 0.009, dLon = 0.014;
+      const couche = (q.couche || 'CANALISATIONS').toString();
+      const essais = [
+        ['capacites', { SERVICE: 'WFS', REQUEST: 'GetCapabilities' }],
+        ['wfs2-geojson', { SERVICE: 'WFS', VERSION: '2.0.0', REQUEST: 'GetFeature', TYPENAMES: couche, COUNT: '20',
+          SRSNAME: 'EPSG:4326', BBOX: `${lat - dLat},${lon - dLon},${lat + dLat},${lon + dLon},urn:ogc:def:crs:EPSG::4326`, OUTPUTFORMAT: 'geojson' }],
+        ['wfs1-gml', { SERVICE: 'WFS', VERSION: '1.1.0', REQUEST: 'GetFeature', TYPENAME: couche, MAXFEATURES: '20',
+          SRSNAME: 'EPSG:4326', BBOX: `${lon - dLon},${lat - dLat},${lon + dLon},${lat + dLat},EPSG:4326` }]
+      ];
+      const res3 = [];
+      for (const [nom, prm] of essais) {
+        try {
+          const r = await appel(`${SERVICES_WMS.brgm}?${new URLSearchParams(prm)}`);
+          const t = await r.text();
+          const extrait = nom === 'capacites'
+            ? { couches: [...new Set([...t.matchAll(/<(?:\w+:)?Name>([^<]{2,120})<\/(?:\w+:)?Name>/g)].map(m => m[1]))].filter(n => /canal/i.test(n)),
+                formats: [...new Set([...t.matchAll(/<(?:\w+:)?(?:Format|Value)>([^<]{2,80})<\/(?:\w+:)?(?:Format|Value)>/g)].map(m => m[1]))].slice(0, 25) }
+            : { debut: t.slice(0, 900) };
+          res3.push({ essai: nom, code: r.status, type: r.headers.get('content-type'), taille: t.length, ...extrait });
+        } catch (e) { res3.push({ essai: nom, erreur: e.message }); }
+      }
+      sortie = { etape, parcelle, couche, resultats: res3 };
+    } else if (etape === 'basol') {
+      // 13/10/2026 : BASOL (sites appelant une action des pouvoirs publics),
+      // troisième bloc des sols pollués (arbitrage du 26/09/2026).
+      const insee = parcelle.split('-')[0];
+      const appels = [
+        ['/api/v2/ssp/instructions', { codesInsee: insee }],
+        ['/api/v2/ssp/conclusions_sup', { codesInsee: insee }],
+        ['/api/v2/ssp/instructions', { codesParcelle: parcelle, rayon: '500' }],
+        ['/api/v2/ssp', { codesParcelle: parcelle, rayon: '500' }]
+      ];
+      const res4 = [];
+      for (const [chemin, crit] of appels) {
+        const qq = new URLSearchParams({ ...crit, pageNumber: '0', pageSize: '3' });
+        try {
+          const r = await appel(`${GEO}${chemin}?${qq}`, { headers: { Accept: 'application/json', Authorization: `Bearer ${jeton}` } });
+          const t = await r.text(); let j = null; try { j = JSON.parse(t); } catch {}
+          const liste = j ? (j.content || j.data || (Array.isArray(j) ? j : null)) : null;
+          res4.push({ chemin, criteres: crit, code: r.status, nombre: j ? (j.totalElements ?? (liste ? liste.length : null)) : null,
+                      cles: j && !liste ? Object.keys(j).slice(0, 12) : undefined,
+                      premier: liste && liste[0] ? liste[0] : (j && !liste ? JSON.stringify(j).slice(0, 600) : t.slice(0, 300)) });
+        } catch (e) { res4.push({ chemin, criteres: crit, erreur: e.message }); }
+      }
+      sortie = { etape, parcelle, resultats: res4 };
     } else if (etape === 'couches') {
       const service = (q.service || 'brgm').toString();
       if (!SERVICES_WMS[service]) {
         return res.status(400).json({ resultat: 'ECHEC', cause: `service inconnu : ${service}`, possibles: Object.keys(SERVICES_WMS) });
       }
-      sortie = { etape, service, couches: await couchesDuService(SERVICES_WMS[service]) };
+      sortie = { etape, service, couches: await couchesDuService(SERVICES_WMS[service], q.tous === '1') };
     } else {
       const base = 'https://risques.vercel.app/api/sonde';
       sortie = {
@@ -302,7 +352,7 @@ async function essayer({ rubrique, version, chemin, forme, criteres }, jeton) {
 
 // Le catalogue de l'IGN peut peser plusieurs megaoctets : delai porte a 25 s
 // pour cette seule etape, qui ne fait qu'un appel.
-async function couchesDuService(service) {
+async function couchesDuService(service, tous = false) {
   // 13/10/2026 : la première lecture rendait zéro couche pour le BRGM. On rend
   // désormais aussi le type de la réponse et son début, et on accepte les
   // balises préfixées (<wms:Name>) que certains serveurs emploient.
@@ -313,7 +363,7 @@ async function couchesDuService(service) {
     const xml = await r.text();
     const uniques = [...new Set([...xml.matchAll(/<(?:\w+:)?Name>([^<]{2,120})<\/(?:\w+:)?Name>/g)].map(m => m[1]))];
     const retenues = uniques.filter(n => MOTS_COUCHES.some(m => n.toLowerCase().includes(m)));
-    return { code: r.status, type, taille: xml.length, debut: xml.slice(0, 400), total: uniques.length, retenues };
+    return { code: r.status, type, taille: xml.length, total: uniques.length, retenues, ...(tous ? { toutes: uniques } : { debut: xml.slice(0, 400) }) };
   } catch (e) {
     return { erreur: e.message };
   }
