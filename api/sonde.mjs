@@ -22,6 +22,7 @@
 //        service = brgm | ign
 //   Parametre facultatif partout : &parcelle=62160-000-XM-0307
 
+import { lirePng, hex } from '../lib/png.mjs';
 const GEO = 'https://www.georisques.gouv.fr';
 const IGN_CADASTRE = 'https://apicarto.ign.fr/api/cadastre/parcelle';
 const PARCELLE_DEFAUT = '62160-000-XM-0307';
@@ -234,6 +235,32 @@ export default async function handler(req, res) {
         } catch (e) { res4.push({ chemin, criteres: crit, erreur: e.message }); }
       }
       sortie = { etape, parcelle, resultats: res4 };
+    } else if (etape === 'legende') {
+      // 13/10/2026 : légende officielle d'une couche dessinée (classes et couleurs), en SLD
+      const couche = (q.couche || 'REMNAPPE').toString();
+      const r = await appel(`${SERVICES_WMS.brgm}?${new URLSearchParams({ SERVICE: 'WMS', VERSION: '1.1.1', REQUEST: 'GetStyles', LAYERS: couche })}`);
+      const t = await r.text();
+      const classes = [...t.matchAll(/<(?:\w+:)?Rule>([\s\S]*?)<\/(?:\w+:)?Rule>/g)].map(m => ({
+        nom: ((m[1].match(/<(?:\w+:)?Title>([^<]*)</) || m[1].match(/<(?:\w+:)?Name>([^<]*)</) || [])[1] || '').trim(),
+        couleurs: [...new Set([...m[1].matchAll(/#[0-9a-fA-F]{6}/g)].map(x => x[0].toLowerCase()))],
+        filtre: ((m[1].match(/<(?:\w+:)?Literal>([^<]*)</) || [])[1] || null)
+      }));
+      sortie = { etape, couche, code: r.status, type: r.headers.get('content-type'), classes, debut: classes.length ? undefined : t.slice(0, 1500) };
+    } else if (etape === 'pixel') {
+      // 13/10/2026 : couleur de la carte sous un point (image de 9 × 9 pixels centrée)
+      const lon = Number(q.lon), lat = Number(q.lat), couche = (q.couche || 'REMNAPPE').toString(), d = 0.0004;
+      const p = new URLSearchParams({ SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetMap', LAYERS: couche, STYLES: '', CRS: 'EPSG:4326',
+        BBOX: `${lat - d},${lon - d},${lat + d},${lon + d}`, WIDTH: '9', HEIGHT: '9', FORMAT: 'image/png', TRANSPARENT: 'TRUE' });
+      const r = await appel(`${SERVICES_WMS.brgm}?${p}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      try {
+        const img = lirePng(buf), c = img.pixel(4, 4);
+        const voisins = [];
+        for (const [x, y] of [[0, 0], [8, 0], [0, 8], [8, 8], [4, 0], [4, 8]]) voisins.push(hex(img.pixel(x, y)) + '/' + img.pixel(x, y)[3]);
+        sortie = { etape, lon, lat, couche, code: r.status, centre: hex(c), opacite: c[3], voisins };
+      } catch (e) {
+        sortie = { etape, lon, lat, couche, code: r.status, type: r.headers.get('content-type'), erreur: e.message, debut: buf.toString('latin1', 0, 300) };
+      }
     } else if (etape === 'couches') {
       const service = (q.service || 'brgm').toString();
       if (!SERVICES_WMS[service]) {

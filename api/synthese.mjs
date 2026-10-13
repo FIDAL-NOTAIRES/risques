@@ -471,7 +471,8 @@ function construireRubriques(d, qualif, bien) {
       const x = d.nappe.items[0];
       const sens = x.sensibilite || x.classe || x.libelle || x.niveau || x.type || premiereValeur(x);
       r.statut = 'concerne';
-      r.phrase = `Le bien est en zone sensible aux remontées de nappe : ${sens || 'sensibilité non qualifiée par la source'}.`;
+      // formule validée par JFD le 13/10/2026 (vocale)
+      r.phrase = `Cette parcelle est située en zone de sensibilité à la remontée de nappe phréatique, de niveau ${sens || 'non qualifié par la source'}.`;
       r.donnees = paires(x, 5);
       r.detail = ["La cartographie des remontées de nappe distingue les zones potentiellement sujettes aux débordements de nappe et aux inondations de cave. Elle est indicative et ne se substitue pas à une étude hydrogéologique.",
                   "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.",
@@ -501,9 +502,10 @@ function construireRubriques(d, qualif, bien) {
       const x = c.items[0], pres = c.items.filter(i => i.distance != null && i.distance <= 500);
       const desc = i => `${i.cat_fluide || 'fluide non précisé'} — ${i.desc_ouv || 'ouvrage'}${i.transporteur ? `, ${i.transporteur}` : ''}`;
       r.statut = pres.length ? 'concerne' : 'non_concerne';
-      r.phrase = x.distance === 0
-        ? `Une canalisation de transport de matières dangereuses traverse ou borde le bien (${x.cat_fluide || 'fluide non précisé'}).`
-        : `Canalisation de transport de matières dangereuses la plus proche à ${x.distance} m du bien (${x.cat_fluide || 'fluide non précisé'})${pres.length ? '' : ' : au-delà de 500 mètres'}.`;
+      // formules validées par JFD le 13/10/2026 (vocale) : on rédige, on ne livre pas le fait brut
+      r.phrase = pres.length
+        ? `Cette parcelle est concernée par la présence d'une canalisation de transport de matières dangereuses, exploitée par ${pres[0].transporteur || 'un exploitant non précisé par la source'}${pres[0].distance === 0 ? ', au droit du bien' : `, à ${pres[0].distance} m`}.`
+        : `Aucune canalisation de transport recensée au droit de cette parcelle ; la plus proche se trouve à ${x.distance} m.`;
       r.donnees = c.items.slice(0, 5).map(i => [`${i.distance ?? '—'} m`, desc(i)]);
       r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation (enterrée, aérienne ou en caniveau, selon l'ouvrage indiqué). Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage.",
                   `Distances mesurées du contour de la parcelle au tracé publié, dans un rayon d'environ ${Math.round(1000)} mètres.`, ...mentions,
@@ -511,7 +513,7 @@ function construireRubriques(d, qualif, bien) {
       R.push(r);
     } else {
       r.statut = 'non_concerne';
-      r.phrase = "Aucune canalisation de transport de matières dangereuses recensée à moins d'un kilomètre du bien.";
+      r.phrase = "Aucune canalisation de transport recensée au droit de cette parcelle, ni à moins d'un kilomètre.";
       r.detail = ['Source interrogée : ' + c.source.libelle + '.', ...mentions];
       R.push(r);
     }
