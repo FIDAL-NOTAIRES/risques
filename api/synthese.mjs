@@ -482,7 +482,8 @@ function construireRubriques(d, qualif, bien) {
         r.phrase = "Cette parcelle n'est pas située en zone sensible aux remontées de nappe phréatique (ni débordement de nappe, ni inondation de cave).";
       } else {
         r.statut = 'concerne';
-        r.phrase = `Cette parcelle est située en zone de sensibilité à la remontée de nappe phréatique, de niveau « ${x.niveau} ».`;
+        r.phrase = `Cette parcelle est située en zone de sensibilité à la remontée de nappe phréatique, de niveau « ${x.niveau} »${x.limite ? ', en limite de zone' : ''}.`;
+        if (x.limite) r.donnees.push(['Position', 'en limite de zone : une partie du voisinage immédiat du bien est en zone sensible ; le niveau le plus élevé présent est retenu par prudence']);
         if (x.classe === '1') r.maximal = 'Zone potentiellement sujette aux débordements de nappe (niveau le plus élevé de la carte du BRGM).';
       }
       r.detail = ["La cartographie des remontées de nappe distingue les zones potentiellement sujettes aux débordements de nappe et aux inondations de cave. Elle est indicative et ne se substitue pas à une étude hydrogéologique.",
