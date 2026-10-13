@@ -172,9 +172,7 @@ function construireRubriques(d, qualif, bien) {
         ...(e.etatRevision === true ? ["Le plan est en cours de révision : le zonage et le règlement peuvent évoluer avant la signature de l'acte."] : [])
       ];
       r.maximal = zoneMaximale(zones, motCle);
-      if (numero === 2 && d.tri && d.tri.obtenu && d.tri.items.length) {
-        r.donnees.push(['Directive inondation', `commune couverte par un TRI ; l'aléa de référence retenu est le scénario moyen (crue centennale)`]);
-      }
+      // (la ligne « Directive inondation » est ajoutée plus bas, quel que soit le statut)
     } else if (approuves.length) {
       r.statut = 'non_concerne';
       r.phrase = `${approuves.length} plan(s) ${motCle} sur la commune, mais aucune zone délimitée ne couvre le bien.`;
@@ -314,26 +312,43 @@ function construireRubriques(d, qualif, bien) {
     }
   }
 
+  // Directive inondation (TRI) — arbitrage du 26/09/2026 : pas de rubrique distincte,
+  // une SIMPLE LIGNE dans la rubrique inondation, quel que soit son statut ; le
+  // classement vaut pour toute la commune. Source muette : « non renseigné ».
+  {
+    const r2 = R.find(x => x.cle === 'pprn');
+    if (r2) {
+      const t = d.tri && d.tri.obtenu ? d.tri.items : null;
+      const nomTri = x => x.libelle || x.libelle_tri || 'territoire non dénommé';
+      r2.donnees = r2.donnees || [];
+      r2.donnees.push(['Directive inondation', !t ? 'non renseigné, à vérifier manuellement'
+        : t.length ? `commune comprise dans le ${nomTri(t[0])} (territoire à risque important d'inondation) ; aléa de référence : scénario moyen (crue centennale)`
+        : "commune hors de tout territoire à risque important d'inondation"]);
+      if (!t) r2.jaune = true;
+    }
+  }
+
   // -- 9 SIS -----------------------------------------------------------------------
   {
     const r = base(9, 'sis', "Secteur d'information sur les sols", 'Pollution des sols', 'L. 125-6 et L. 125-7 code de l\'environnement');
     r.carte = COUCHES_SYNTHESE.sis;
-    const echelle = d.sis.source && d.sis.source.echelle === 'commune' ? 'commune' : 'parcelle';
-    if (!d.sis.obtenu) R.push(nonObtenu(r, 'Géorisques (SIS)'));
-    else if (d.sis.items.length) {
-      const x = d.sis.items[0];
+    // 13/10/2026 : secteurs lus à la commune, rapprochés du contour de la parcelle
+    if (!d.sis.obtenu) R.push(nonRenseigne(r, 'Géorisques (secteurs d\'information sur les sols)'));
+    else if (d.sis.dansBien && d.sis.dansBien.length) {
+      const x = d.sis.dansBien[0];
       r.statut = 'concerne';
-      r.phrase = echelle === 'parcelle'
-        ? `Le bien est inscrit dans un secteur d'information sur les sols : ${x.nom || x.nom_sis || x.libelle || 'secteur non dénommé'}.`
-        : `${d.sis.items.length} secteur(s) d'information sur les sols recensé(s) sur la commune ; l'emprise exacte doit être vérifiée.`;
-      r.donnees = [['Échelle de la donnée', echelle], ['Secteur', x.nom || x.nom_sis || x.libelle || '—'], ['Identifiant', x.id_sis || x.id || x.code || '—']];
+      r.phrase = `Le bien est inscrit dans un secteur d'information sur les sols : ${x.nom || x.nom_sis || 'secteur non dénommé'}.`;
+      r.donnees = [['Secteur', x.nom || '—'], ['Identifiant', x.identifiantSis || x.id_sis || '—'], ['Adresse', x.adresse || '—'],
+                   ['Mise à jour', x.dateMaj || x.date_maj || '—'], ['Fiche', x.ficheRisque || x.fiche_risque || '—']];
       r.detail = ["Les secteurs d'information sur les sols (SIS) désignent les terrains où la connaissance de la pollution justifie, en cas de changement d'usage, une étude de sol et des mesures de gestion. Le vendeur ou le bailleur est tenu d'en informer par écrit l'acquéreur ou le locataire, et l'acte constate cette information (L. 125-7)."];
-      if (echelle === 'parcelle') r.maximal = "Bien inscrit dans un secteur d'information sur les sols : information écrite obligatoire et étude de sol en cas de changement d'usage.";
+      r.maximal = "Bien inscrit dans un secteur d'information sur les sols : information écrite obligatoire et étude de sol en cas de changement d'usage.";
       R.push(r);
     } else {
       r.statut = 'non_concerne';
-      r.phrase = echelle === 'parcelle' ? "Le bien n'est inscrit dans aucun secteur d'information sur les sols." : "Aucun secteur d'information sur les sols sur la commune.";
-      r.detail = ["L'absence de SIS ne préjuge pas de l'absence de pollution : voir les rubriques ICPE et CASIAS."];
+      const n = d.sis.items.length;
+      r.phrase = "Le bien n'est inscrit dans aucun secteur d'information sur les sols.";
+      r.donnees = [['Secteurs sur la commune', n ? `${n}, aucun ne touche la parcelle` : 'aucun']];
+      r.detail = ["Contours des secteurs de la commune rapprochés du contour de la parcelle. L'absence de SIS ne préjuge pas de l'absence de pollution : voir les rubriques ICPE et CASIAS."];
       R.push(r);
     }
   }
@@ -441,21 +456,23 @@ function construireRubriques(d, qualif, bien) {
   {
     const r = base(14, 'nappe', 'Remontée de nappe', 'Information complémentaire', 'inventaire BRGM, hors obligation réglementaire');
     r.carte = COUCHES_SYNTHESE.nappe;
-    if (!d.nappe.obtenu) R.push(nonObtenu(r, 'Géorisques / BRGM (remontée de nappe)'));
+    if (!d.nappe.obtenu) R.push(nonRenseigne(r, 'BRGM (remontée de nappe)'));
     else if (d.nappe.items.length) {
       const x = d.nappe.items[0];
       const sens = x.sensibilite || x.classe || x.libelle || x.niveau || x.type || premiereValeur(x);
       r.statut = 'concerne';
       r.phrase = `Le bien est en zone sensible aux remontées de nappe : ${sens || 'sensibilité non qualifiée par la source'}.`;
       r.donnees = paires(x, 5);
-      r.detail = ["La cartographie des remontées de nappe distingue les zones potentiellement sujettes aux débordements de nappe et aux inondations de cave. Elle est indicative et ne se substitue pas à une étude hydrogéologique. Source retenue : " + (d.nappe.source ? d.nappe.source.libelle : '—') + '.'];
+      r.detail = ["La cartographie des remontées de nappe distingue les zones potentiellement sujettes aux débordements de nappe et aux inondations de cave. Elle est indicative et ne se substitue pas à une étude hydrogéologique.",
+                  "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.",
+                  "Source retenue : " + (d.nappe.source ? d.nappe.source.libelle : '—') + '.'];
       if (/tr[èe]s\s+forte|d[ée]bordement|forte/i.test(String(sens))) r.maximal = `Sensibilité forte aux remontées de nappe : ${sens}.`;
       R.push(r);
     } else {
-      r.statut = 'non_concerne';
-      r.phrase = 'Le bien est hors des zones sensibles aux remontées de nappe cartographiées.';
-      r.detail = ['Source interrogée : ' + (d.nappe.source ? d.nappe.source.libelle : '—') + '.'];
-      R.push(r);
+      // 13/10/2026 : la couche répond mais ne porte rien sous le bien. Tant qu'un
+      // témoin positif n'a pas confirmé la lecture, on ne conclut pas à l'absence
+      // (règle du 27/09/2026 : une rubrique muette n'est jamais « non concernée »).
+      R.push(nonRenseigne(r, 'BRGM (remontée de nappe)', "la couche n'a rien rendu sous le bien"));
     }
   }
 
@@ -463,20 +480,22 @@ function construireRubriques(d, qualif, bien) {
   {
     const r = base(15, 'canalisations', 'Canalisations de transport de matières dangereuses', 'Information complémentaire', 'L. 555-1 et suivants code de l\'environnement');
     r.carte = COUCHES_SYNTHESE.canalisations;
-    if (!d.canalisations.obtenu) R.push(nonObtenu(r, 'Géorisques (canalisations)'));
+    if (!d.canalisations.obtenu) R.push(nonRenseigne(r, 'BRGM (canalisations)'));
     else if (d.canalisations.items.length) {
       const x = d.canalisations.items[0];
       const echelle = d.canalisations.source && d.canalisations.source.echelle === 'commune' ? 'sur la commune' : 'à proximité du bien';
       r.statut = 'concerne';
       r.phrase = `${d.canalisations.items.length} canalisation(s) de transport de matières dangereuses recensée(s) ${echelle}.`;
       r.donnees = paires(x, 5);
-      r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation enterrée. Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage. Source retenue : " + (d.canalisations.source ? d.canalisations.source.libelle : '—') + '.'];
+      r.detail = ["Gaz, hydrocarbures ou produits chimiques transportés par canalisation enterrée. Les servitudes d'utilité publique associées (SUP1 à SUP3) limitent l'implantation d'établissements recevant du public et imposent une information des maîtres d'ouvrage.",
+                  "La donnée publique ne donne qu'un tracé approximatif, jamais la bande de servitude exacte : l'emplacement exact de la canalisation est à demander à la MAIRIE.",
+                  "En cas de projet de construction, ce document n'a pas valeur de pièce à joindre au dossier de permis de construire : c'est une information de conseil.",
+                  "Source retenue : " + (d.canalisations.source ? d.canalisations.source.libelle : '—') + '.'];
       R.push(r);
     } else {
-      r.statut = 'non_concerne';
-      r.phrase = 'Aucune canalisation de transport de matières dangereuses recensée à proximité du bien.';
-      r.detail = ['Source interrogée : ' + (d.canalisations.source ? d.canalisations.source.libelle : '—') + '.'];
-      R.push(r);
+      // 13/10/2026 : une lecture SOUS le bien ne dit rien d'une canalisation voisine ;
+      // la distance au tracé reste à mesurer. Pas de conclusion d'absence.
+      R.push(nonRenseigne(r, 'BRGM (canalisations)', "aucun tracé sous le bien ; la distance au tracé le plus proche n'est pas encore mesurée"));
     }
   }
 
@@ -513,6 +532,16 @@ function construireRubriques(d, qualif, bien) {
 
 function base(numero, cle, intitule, regime, fondement) {
   return { numero, cle, intitule, regime, fondement, statut: 'non_concerne', phrase: '', donnees: [], detail: [], carte: null, maximal: null, table: null };
+}
+
+// Rubrique dont la source est muette ou ne permet pas de conclure (arbitrage du
+// 24/09/2026) : mention unique « non renseigné, à vérifier manuellement », en
+// jaune, jamais la phrase d'une rubrique non concernée (27/09/2026).
+function nonRenseigne(r, source, raison) {
+  r.statut = 'non_obtenu';
+  r.phrase = `Non renseigné, à vérifier manuellement${raison ? ` : ${raison}` : ''}.`;
+  r.detail = [`Source interrogée : ${source}${raison ? ` — ${raison}` : " — aucune réponse exploitable"}. La génération n'a pas été bloquée ; le rédacteur reprend la main sur ce point.`];
+  return r;
 }
 
 function nonObtenu(r, source) {
