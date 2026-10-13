@@ -29,7 +29,10 @@ const DELAI_MS = 8000;
 
 const SERVICES_WMS = {
   brgm: 'https://mapsref.brgm.fr/wxs/georisques/risques',
-  ign: 'https://data.geopf.fr/wms-r'
+  ign: 'https://data.geopf.fr/wms-r',
+  // 13/10/2026 : le BRGM rejette les appels venus des serveurs de Vercel ;
+  // le service cartographique de Géorisques est essayé en seconde source.
+  georisques: 'https://www.georisques.gouv.fr/services'
 };
 
 const MOTS_COUCHES = [
