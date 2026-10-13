@@ -157,6 +157,26 @@ export default async function handler(req, res) {
         } catch (e) { res.push({ chemin, criteres: crit, erreur: e.message }); }
       }
       sortie = { etape, parcelle, resultats: res };
+    } else if (etape === 'info') {
+      // 13/10/2026 : format des attributs rendus par le BRGM sous la parcelle
+      // (GetFeatureInfo), essayé en trois formats pour REMNAPPE_FR et CANALISATIONS.
+      const geo = await geometrie(parcelle);
+      if (!geo.obtenu) return res.status(200).json({ resultat: 'ECHEC', cause: geo.cause });
+      const { lon, lat } = geo.centre, d = 0.0025;
+      const couches = (q.couches || 'REMNAPPE_FR,CANALISATIONS').toString().split(',');
+      const formats = ['application/json', 'application/vnd.ogc.gml', 'text/plain'];
+      const res2 = [];
+      for (const couche of couches) for (const fmt of formats) {
+        const p = new URLSearchParams({ SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetFeatureInfo', LAYERS: couche, QUERY_LAYERS: couche,
+          STYLES: '', CRS: 'EPSG:4326', BBOX: `${lat - d},${lon - d},${lat + d},${lon + d}`, WIDTH: '101', HEIGHT: '101', I: '50', J: '50',
+          INFO_FORMAT: fmt, FEATURE_COUNT: '5' });
+        try {
+          const r = await appel(`${SERVICES_WMS.brgm}?${p}`);
+          const t = await r.text();
+          res2.push({ couche, format: fmt, code: r.status, type: r.headers.get('content-type'), taille: t.length, debut: t.slice(0, 700) });
+        } catch (e) { res2.push({ couche, format: fmt, erreur: e.message }); }
+      }
+      sortie = { etape, parcelle, resultats: res2 };
     } else if (etape === 'couches') {
       const service = (q.service || 'brgm').toString();
       if (!SERVICES_WMS[service]) {
