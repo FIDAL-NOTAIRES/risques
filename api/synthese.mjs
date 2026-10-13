@@ -76,6 +76,10 @@ const CELL_L = (UTILE - GOUTTIERE) / 2;
 const CARTE_H = Math.round(CELL_L * 0.86);
 const PX = { l: 640, h: Math.round(640 * 0.86) };
 const MARGE_COMMUNALE = 2500;   // rubrique CatNat : carte a l'echelle de la commune
+// Remontee de nappe (13/10/2026) : le BRGM ne dessine sa couche qu'entre le
+// 1/90 000 et le 1/500 000 ; sur une carte de 640 px, une emprise d'environ
+// 27 km de large donne le 1/150 000, echelle a laquelle le niveau est lu.
+const MARGE_REGIONALE = 11500;
 
 export default async function handler(req, res) {
   const t0 = Date.now();
@@ -465,7 +469,8 @@ function construireRubriques(d, qualif, bien) {
   // -- 13 Remontee de nappe ---------------------------------------------------------
   {
     const r = base(13, 'nappe', 'Remontée de nappe', 'Information complémentaire', 'inventaire BRGM, hors obligation réglementaire');
-    r.carte = COUCHES_SYNTHESE.nappe;
+    // carte élargie au 1/150 000 : seule échelle où le BRGM dessine la couche lue
+    r.carte = { service: COUCHES_SYNTHESE.nappe.service, couche: 'REMNAPPE', echelle: 'regionale' };
     // 13/10/2026 : niveau lu à la couleur de la carte du BRGM (lib/moisson.mjs,
     // nappeParCouleur), d'après la légende officielle ; formule validée par JFD.
     const mentionNappe = "Cette carte n'a AUCUNE VALEUR RÉGLEMENTAIRE : c'est une information de conseil, non une contrainte opposable comme un plan de prévention des risques.";
@@ -771,6 +776,7 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
 async function cellule(e, r, x, bien, imgs, marge) {
   const yHaut = e.y;
   const communal = r.carte && r.carte.echelle === 'commune';
+  const regional = r.carte && r.carte.echelle === 'regionale';
 
   // Carte
   if (imgs) {
@@ -786,7 +792,7 @@ async function cellule(e, r, x, bien, imgs, marge) {
     } catch (err) {
       e.page.drawText(`Cartographie indisponible : ${err.message}`.slice(0, 60), { x: x + 6, y: yHaut - 16, size: 7.5, font: e.F.sans, color: CARMIN });
     }
-    if (!communal) contour(e, bien, imgs.bbox, x, yHaut - CARTE_H, CELL_L, CARTE_H, false);
+    if (!communal && !regional) contour(e, bien, imgs.bbox, x, yHaut - CARTE_H, CELL_L, CARTE_H, false);
     croix(e, bien, imgs.bbox, x, yHaut - CARTE_H, CELL_L, CARTE_H);
   } else {
     e.page.drawRectangle({ x, y: yHaut - CARTE_H, width: CELL_L, height: CARTE_H, color: FOND });
@@ -795,7 +801,7 @@ async function cellule(e, r, x, bien, imgs, marge) {
   e.page.drawRectangle({ x, y: yHaut - CARTE_H, width: CELL_L, height: CARTE_H, borderColor: GRIS, borderWidth: 0.6 });
 
   // Legende de la carte
-  const emp = communal ? MARGE_COMMUNALE * 2 : marge * 2;
+  const emp = communal ? MARGE_COMMUNALE * 2 : regional ? MARGE_REGIONALE * 2 : marge * 2;
   let leg = `Emprise ${emp >= 1000 ? `${(emp / 1000).toFixed(1).replace('.0', '')} km` : `${emp} m`}`;
   if (!r.carte || !r.carte.couche) leg += ' — aucune couche nationale : carte de situation';
   else if (imgs && imgs.sur === null) leg += ` — couche ${r.carte.couche} non obtenue`;
@@ -853,6 +859,7 @@ async function chargerCartes(bien, rubriques, marge) {
   const bboxPlan = emprise(bien.centre, Math.max(60, Math.round(marge * 0.6)), { l: 900, h: Math.round(900 * 0.56) });
   const bboxCommune = emprise(bien.centre, MARGE_COMMUNALE, PX);
   const bboxRub = emprise(bien.centre, marge, PX);
+  const bboxRegion = emprise(bien.centre, MARGE_REGIONALE, PX);
 
   const taches = [];
   const garde = { bboxPlan, bboxCommune };
@@ -864,7 +871,8 @@ async function chargerCartes(bien, rubriques, marge) {
   const parRubrique = {};
   for (const r of rubriques) {
     const communal = r.carte && r.carte.echelle === 'commune';
-    const bbox = communal ? bboxCommune : bboxRub;
+    const regional = r.carte && r.carte.echelle === 'regionale';
+    const bbox = communal ? bboxCommune : regional ? bboxRegion : bboxRub;
     parRubrique[r.numero] = { fond: null, sur: null, bbox };
     taches.push(image(getMap(WMS_IGN, 'GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', bbox, PX, false)).then(b => { parRubrique[r.numero].fond = b; }).catch(() => {}));
     if (r.carte && r.carte.couche) {
