@@ -160,11 +160,18 @@ export default async function handler(req, res) {
     } else if (etape === 'info') {
       // 13/10/2026 : format des attributs rendus par le BRGM sous la parcelle
       // (GetFeatureInfo), essayé en trois formats pour REMNAPPE_FR et CANALISATIONS.
-      const geo = await geometrie(parcelle);
-      if (!geo.obtenu) return res.status(200).json({ resultat: 'ECHEC', cause: geo.cause });
-      const { lon, lat } = geo.centre, d = 0.0025;
+      // 13/10/2026 : ?lon=…&lat=… permet de sonder un point quelconque (témoin
+      // positif sans référence cadastrale à portée de main)
+      let lon, lat;
+      if (q.lon && q.lat) { lon = Number(q.lon); lat = Number(q.lat); }
+      else {
+        const geo = await geometrie(parcelle);
+        if (!geo.obtenu) return res.status(200).json({ resultat: 'ECHEC', cause: geo.cause });
+        ({ lon, lat } = geo.centre);
+      }
+      const d = 0.0025;
       const couches = (q.couches || 'REMNAPPE_FR,CANALISATIONS').toString().split(',');
-      const formats = ['application/json', 'application/vnd.ogc.gml', 'text/plain'];
+      const formats = q.format ? [q.format.toString()] : ['application/json', 'application/vnd.ogc.gml', 'text/plain'];
       const res2 = [];
       for (const couche of couches) for (const fmt of formats) {
         const p = new URLSearchParams({ SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetFeatureInfo', LAYERS: couche, QUERY_LAYERS: couche,
