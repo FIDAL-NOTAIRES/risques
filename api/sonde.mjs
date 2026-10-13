@@ -248,19 +248,33 @@ export default async function handler(req, res) {
       sortie = { etape, couche, code: r.status, type: r.headers.get('content-type'), classes, debut: classes.length ? undefined : t.slice(0, 1500) };
     } else if (etape === 'pixel') {
       // 13/10/2026 : couleur de la carte sous un point (image de 9 × 9 pixels centrée)
-      const lon = Number(q.lon), lat = Number(q.lat), couche = (q.couche || 'REMNAPPE').toString(), d = 0.0004;
+      // ?demi= demi-côté de l'image en degrés (défaut 0,0004 ≈ 45 m) ; ?px= côté en pixels (impair, défaut 9)
+      const lon = Number(q.lon), lat = Number(q.lat), couche = (q.couche || 'REMNAPPE').toString(), d = Number(q.demi || 0.0004);
+      const n = Math.max(3, Math.min(201, Number(q.px || 9) | 1)), m = (n - 1) / 2;
       const p = new URLSearchParams({ SERVICE: 'WMS', VERSION: '1.3.0', REQUEST: 'GetMap', LAYERS: couche, STYLES: '', CRS: 'EPSG:4326',
-        BBOX: `${lat - d},${lon - d},${lat + d},${lon + d}`, WIDTH: '9', HEIGHT: '9', FORMAT: 'image/png', TRANSPARENT: 'TRUE' });
+        BBOX: `${lat - d},${lon - d},${lat + d},${lon + d}`, WIDTH: String(n), HEIGHT: String(n), FORMAT: 'image/png', TRANSPARENT: 'TRUE' });
       const r = await appel(`${SERVICES_WMS.brgm}?${p}`);
       const buf = Buffer.from(await r.arrayBuffer());
       try {
-        const img = lirePng(buf), c = img.pixel(4, 4);
-        const voisins = [];
-        for (const [x, y] of [[0, 0], [8, 0], [0, 8], [8, 8], [4, 0], [4, 8]]) voisins.push(hex(img.pixel(x, y)) + '/' + img.pixel(x, y)[3]);
-        sortie = { etape, lon, lat, couche, code: r.status, centre: hex(c), opacite: c[3], voisins };
+        const img = lirePng(buf), c = img.pixel(m, m);
+        // inventaire des couleurs présentes dans toute l'image
+        const compte = {};
+        for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { const v = img.pixel(x, y); const k = v[3] ? hex(v) : 'transparent'; compte[k] = (compte[k] || 0) + 1; }
+        sortie = { etape, lon, lat, couche, demi: d, px: n, code: r.status, centre: c[3] ? hex(c) : 'transparent', couleurs: compte };
       } catch (e) {
         sortie = { etape, lon, lat, couche, code: r.status, type: r.headers.get('content-type'), erreur: e.message, debut: buf.toString('latin1', 0, 300) };
       }
+    } else if (etape === 'echelle') {
+      // 13/10/2026 : échelles d'affichage déclarées pour une couche (Min/MaxScaleDenominator)
+      const couche = (q.couche || 'REMNAPPE').toString();
+      const r = await appel(`${SERVICES_WMS.brgm}?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetCapabilities`);
+      const t = await r.text();
+      const i = t.search(new RegExp(`<Name>${couche}</Name>`));
+      const bloc = i < 0 ? '' : t.slice(Math.max(0, i - 200), i + 2500);
+      sortie = { etape, couche, trouve: i >= 0,
+        min: (bloc.match(/<MinScaleDenominator>([^<]+)</) || [])[1] || null,
+        max: (bloc.match(/<MaxScaleDenominator>([^<]+)</) || [])[1] || null,
+        extrait: bloc.replace(/\s+/g, ' ').slice(0, 1600) };
     } else if (etape === 'couches') {
       const service = (q.service || 'brgm').toString();
       if (!SERVICES_WMS[service]) {
