@@ -11,6 +11,10 @@
     },
     "api/sonde.mjs": {
       "maxDuration": 60
+    },
+    "api/portefeuille.mjs": {
+      "maxDuration": 60,
+      "memory": 2048
     }
   },
   "regions": [
