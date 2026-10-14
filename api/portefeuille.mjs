@@ -59,8 +59,8 @@ export default async function handler(req, res) {
     if (req.method === 'POST') return await creer(req, res);
     // commande par simple adresse (appli autonome, essais) :
     // ?parcelles=62160-000-XM-0307,62160-000-XM-0308&societe=…&dossier=…
-    if (req.query.parcelles) return await creer({ ...req, body: { societe: req.query.societe || null, dossier: req.query.dossier || null,
-      appelant: 'adresse', parcelles: String(req.query.parcelles).split(/[,;\s]+/).filter(Boolean) } }, res);
+    if (req.query.parcelles) return await creer(req, res, { societe: req.query.societe || null, dossier: req.query.dossier || null,
+      appelant: 'adresse', parcelles: String(req.query.parcelles).split(/[,;\s]+/).filter(Boolean) });
     if (req.query.travail) return await interroger(req, res, String(req.query.travail));
     return res.status(400).json({ statut: 'echec', cause: 'POST pour commander un portefeuille, ou GET ?travail=… pour l\'interroger.' });
   } catch (e) {
@@ -71,8 +71,10 @@ export default async function handler(req, res) {
 // ---------------------------------------------------------------------------------------
 // COMMANDE
 // ---------------------------------------------------------------------------------------
-async function creer(req, res) {
-  const c = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+async function creer(req, res, commande = null) {
+  // la requête est passée telle quelle (ses en-têtes donnent l'adresse du serveur) ;
+  // la commande par adresse arrive à part
+  const c = commande || (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}));
   let groupes = Array.isArray(c.groupes) ? c.groupes : null;
   const autonome = !groupes;
   if (autonome) {
