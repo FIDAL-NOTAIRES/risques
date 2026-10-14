@@ -10,6 +10,7 @@
 //         retriée par commune, section, numéro)
 //      → 202 { travail, interroger, statut: "en_cours" }  — aucun PDF, tout de suite
 //
+//   GET  /api/portefeuille?parcelles=…,…&societe=…   même commande, par simple adresse
 //   GET  /api/portefeuille?travail=…   (l'APPELANT interroge ; RISQUES ne rappelle jamais)
 //      → { statut: "en_cours", phase, fait, total, message }   tant que ce n'est pas fini
 //      → { statut: "termine", rapport, erps: [{numero, url}], expire_le }
@@ -56,6 +57,10 @@ export default async function handler(req, res) {
   if (!process.env.GEORISQUES_TOKEN) return res.status(500).json({ statut: 'echec', cause: 'GEORISQUES_TOKEN absente.' });
   try {
     if (req.method === 'POST') return await creer(req, res);
+    // commande par simple adresse (appli autonome, essais) :
+    // ?parcelles=62160-000-XM-0307,62160-000-XM-0308&societe=…&dossier=…
+    if (req.query.parcelles) return await creer({ ...req, body: { societe: req.query.societe || null, dossier: req.query.dossier || null,
+      appelant: 'adresse', parcelles: String(req.query.parcelles).split(/[,;\s]+/).filter(Boolean) } }, res);
     if (req.query.travail) return await interroger(req, res, String(req.query.travail));
     return res.status(400).json({ statut: 'echec', cause: 'POST pour commander un portefeuille, ou GET ?travail=… pour l\'interroger.' });
   } catch (e) {
