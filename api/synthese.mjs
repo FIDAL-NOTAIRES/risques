@@ -147,7 +147,7 @@ export default async function handler(req, res) {
 //   phrase, donnees: [[etiquette, valeur]], detail: [paragraphes],
 //   carte: { service, couche, echelle }, maximal: null | texte }
 // statut : 'concerne' | 'non_concerne' | 'non_obtenu'
-function construireRubriques(d, qualif, bien) {
+export function construireRubriques(d, qualif, bien) {
   const R = [];
   const com = d.commune.items[0] || {};
 
@@ -615,7 +615,7 @@ function premiereValeur(obj) {
   return p ? p[1] : null;
 }
 
-function sources(d, horodatage) {
+export function sources(d, horodatage) {
   const quand = horodatage.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
   const etat = ok => ok ? 'réponse obtenue' : 'sans réponse';
   return [
@@ -636,7 +636,15 @@ function sources(d, horodatage) {
 // ===========================================================================
 // RENDU
 // ===========================================================================
-async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horodatage, avecCartes }) {
+// 13/10/2026 — PORTEFEUILLE : le même composer fabrique aussi la SECTION d'un bien du
+// rapport de portefeuille (mode 'section'), assemblée ensuite par api/portefeuille.mjs.
+// En section : pas de page de garde à trois vues ni d'encadré (arbitrage du 15/09 :
+// l'encadré vaut pour le bien seul), un bandeau d'identification du bien, le corps et
+// l'annexe ; pas de liste des sources (une seule, en fin de rapport global, 16/09) ;
+// pied de page sans pagination (posée à l'assemblage) ; liens internes rendus sous
+// forme de positions, recréés par l'assembleur.
+export async function composerSection(opts) { return composer({ ...opts, mode: 'section' }); }
+async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horodatage, avecCartes, mode = 'bien', identite = null, libSources = null }) {
   const doc = await PDFDocument.create();
   doc.registerFontkit(fontkit);
 
@@ -655,6 +663,15 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
   const marge = margeAdaptee(bien.contenance);
   const cartes = avecCartes ? await chargerCartes(bien, rubriques, marge) : null;
 
+  if (mode === 'section') {
+    // --- Bandeau d'identification du bien (portefeuille) ------------------------
+    nouvellePage(e);
+    titre(e, identite.titre, 15, serifG);
+    if (identite.mention) { e.y -= 2; paragraphe(e, identite.mention, 9, sans, CARMIN); }
+    e.y -= 6;
+    encadre(e, identite.lignes);
+    e.y -= 12;
+  } else {
   // --- Page de garde --------------------------------------------------------
   nouvellePage(e);
   titre(e, 'RAPPORT DE SYNTHÈSE — RISQUES', 20, serifG);
@@ -680,10 +697,11 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
     await vue(e, cartes.garde.commune, petite.l, petite.h, bien, cartes.garde.bboxCommune, { x: MARGE.g + CELL_L + GOUTTIERE, croix: true, legende: 'Situation sur le plan communal' });
     e.y = Math.min(yBas, e.y);
   }
+  }
 
   // --- Encadre de tete : seulement si un risque atteint son niveau maximal ----
-  const saillants = rubriques.filter(r => r.maximal);
-  nouvellePage(e);
+  const saillants = mode === 'section' ? [] : rubriques.filter(r => r.maximal);
+  if (mode !== 'section') nouvellePage(e);
   if (saillants.length) {
     section(e, "Points saillants");
     paragraphe(e, "Seuls figurent ici les risques qui atteignent le niveau le plus élevé de leur propre échelle. Les autres sont à leur place, dans l'ordre réglementaire.", 9, sans, GRIS);
@@ -724,7 +742,7 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
 
   // --- Annexe de detail, meme ordre -----------------------------------------------
   nouvellePage(e);
-  section(e, 'Annexe — Détail par rubrique');
+  section(e, mode === 'section' ? `Annexe — ${identite.court}` : 'Annexe — Détail par rubrique');
   paragraphe(e, "Références juridiques, données complètes et listes. L'ordre est celui des rubriques du corps.", 9, sans, GRIS);
   e.y -= 8;
   for (const r of rubriques) {
@@ -753,6 +771,17 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
       for (const l of r.table.lignes) rangee(e, l, r.table.largeurs);
     }
     e.y -= 14;
+  }
+
+  if (mode === 'section') {
+    piedsSection(e);
+    const index = p => e.pages.indexOf(p);
+    return {
+      octets: await e.doc.save(),
+      pages: e.pages.length,
+      liens: e.liens.map(l => ({ page: index(l.page), rect: l.rect, numero: l.numero })),
+      ancres: Object.fromEntries(Object.entries(e.ancres).map(([k, a]) => [k, { page: index(a.page), y: a.y }]))
+    };
   }
 
   // --- Sources ---------------------------------------------------------------------
@@ -1091,6 +1120,16 @@ function rangee(e, valeurs, largeurs) {
 
 // Pied de page : adresse du bien, date d'etablissement, pagination — pour
 // qu'une page detachee reste identifiable.
+// Pied de page d'une section de portefeuille : adresse et référence du bien de la page
+// (arbitrage du 16/09/2026) ; la date et la pagination sont posées à l'assemblage.
+function piedsSection(e) {
+  e.pages.forEach(p => {
+    const gauche = tronquer(`${e.dossier ? `${e.dossier} — ` : ''}${e.adresse} — ${e.ref}`, e.F.sans, 7.5, UTILE - 170);
+    p.drawLine({ start: { x: MARGE.g, y: MARGE.bas - 18 }, end: { x: PAGE.l - MARGE.d, y: MARGE.bas - 18 }, thickness: 0.5, color: GRIS });
+    p.drawText(gauche, { x: MARGE.g, y: MARGE.bas - 32, size: 7.5, font: e.F.sans, color: GRIS });
+  });
+}
+
 function pieds(e) {
   const total = e.pages.length;
   e.pages.forEach((p, i) => {
