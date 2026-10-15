@@ -309,14 +309,17 @@ async function assembler(ctx) {
     const y = PAGE.h - 124 - k * 18;
     p.drawCircle({ x: MG + 4, y: y + 3, size: 3.6, color: b.jaune ? JAUNE : rgb(1, 1, 1), borderColor: GRIS, borderWidth: 0.6 });
     const texte = `${b.numero ? `(${b.numero}) ` : ''}${b.refs.join(', ')}${etat.faites[b.ref] && etat.faites[b.ref].adresse ? ` — ${etat.faites[b.ref].adresse}` : ''}`;
-    p.drawText(couper(texte, sans, 9, PAGE.l - 2 * MG - 60), { x: MG + 14, y, size: 9, font: sans, color: b.introuvable ? CARMIN : NUIT });
+    p.drawText(couper(texte, sans, 9, PAGE.l - 2 * MG - (b.introuvable ? 250 : 60)), { x: MG + 14, y, size: 9, font: sans, color: b.introuvable ? CARMIN : NUIT });
     const s = etat.sections[i];
     if (s && s.url) {
       const num = String(debutDe[i] + 1), w = sans.widthOfTextAtSize(num, 9);
       p.drawText(num, { x: PAGE.l - MG - w, y, size: 9, font: sans, color: CANARD });
       lier(doc, p, [MG, y - 4, PAGE.l - MG, y + 11], pagesDoc[debutDe[i]], PAGE.h - 50);
     } else {
-      p.drawText('non traité', { x: PAGE.l - MG - sans.widthOfTextAtSize('non traité', 8), y, size: 8, font: sans, color: CARMIN });
+      // le motif est connu (référence absente du cadastre, panne d'une source) : on le dit
+      const motif = `non traité${b.introuvable ? ` — ${b.introuvable}` : ''}`;
+      const m = couper(motif, sans, 8, 230);
+      p.drawText(m, { x: PAGE.l - MG - sans.widthOfTextAtSize(m, 8), y, size: 8, font: sans, color: CARMIN });
     }
   });
 
