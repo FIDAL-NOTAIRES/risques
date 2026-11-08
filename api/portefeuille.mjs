@@ -1,398 +1,231 @@
-// RISQUES — /api/portefeuille.mjs (13/10/2026)
+// Bibliothèque des phrases pré-écrites — LA source, versionnée avec le
+// code. La base ne garde que le code du bloc et les valeurs à substituer
+// (marteau_voyant.phrase_code, marteau_voyant.precisions).
 //
-// PORTEFEUILLE EN MODE DIFFÉRÉ — arbitrages des 14, 15 et 16/09/2026, choix techniques
-// validés par JFD le 13/10/2026.
+// Pourquoi ici et pas en base : c'est une bibliothèque FIXE, sans
+// génération libre (mémo § 7.1). Un texte modifiable sans revue serait
+// une phrase modifiable sans que personne le voie. Ici, toute retouche
+// passe par un commit.
 //
-//   POST /api/portefeuille      corps JSON :
-//        { societe, appelant, dossier,
-//          groupes: [ { numero, parcelles: ["62160-000-XM-0307", …] }, … ] }
-//        (ou, en appli autonome, { societe, parcelles: [ … ] } : une parcelle par bien,
-//         retriée par commune, section, numéro)
-//      → 202 { travail, interroger, statut: "en_cours" }  — aucun PDF, tout de suite
+// Chaque bloc porte : la famille (1-10), le voyant de cette famille, la
+// couleur, et le texte. Les crochets {nom} sont substitués par les
+// précisions du voyant. Une précision manquante laisse le crochet
+// visible — VOLONTAIREMENT : un rapport avec « [précision] » se voit à
+// la relecture, un rapport avec un trou ne se voit pas.
 //
-//   GET  /api/portefeuille?parcelles=…,…&societe=…   même commande, par simple adresse
-//   GET  /api/portefeuille?travail=…   (l'APPELANT interroge ; RISQUES ne rappelle jamais)
-//      → { statut: "en_cours", phase, fait, total, message }   tant que ce n'est pas fini
-//      → { statut: "termine", rapport, erps: [{numero, url}], expire_le }
-//      → 410 { statut: "expire" } passé trente jours
-//
-// Mécanique : chaque interrogation fait avancer le travail d'une TRANCHE (≈ 40 s), sous
-// verrou (une seule tranche à la fois). Quatre phases :
-//   1. moisson     — chaque parcelle : géométrie, sources, quinze rubriques ;
-//   2. regroupement — les groupes de l'appelant sont REPRIS tels quels ; une parcelle dont
-//                    les rubriques divergent du reste du groupe en SORT, groupe 12 → 12.1,
-//                    12.2…, avec une mention qui l'explique ;
-//   3. rendu       — une section de rapport par bien + l'ERP du bien (un fichier par bien) ;
-//   4. assemblage  — page de garde sobre (société, date), sommaire cliquable avec pastille
-//                    jaune si documentation incomplète, sections, liste UNIQUE des bases
-//                    interrogées, pagination ; dépôt et adresse valable trente jours.
-//
-// Hors de ce lot : archivage automatique sur le Drive à J+28 (il faut un accès Google
-// côté serveur) et détection des groupes en appli autonome.
+// Règle du 04/09/2026 : jamais un simple « aucun élément relevé ». Quand
+// une vérification n'a pas pu être faite, la RAISON est dans la phrase.
 
-import { PDFDocument, PDFName, rgb } from 'pdf-lib';
-import fontkit from '@pdf-lib/fontkit';
-import { neon } from '@neondatabase/serverless';
-import { put, del } from '@vercel/blob';
-import { police } from '../lib/polices.mjs';
-import { geometrieParcelle, collecterSynthese, qualifier, adressePostale, libelleCommune } from '../lib/moisson.mjs';
-import { construireRubriques, composerSection, sources } from './synthese.mjs';
+export const PHRASES = {
+  // ---------------------------------------------------- 1. identité
+  identite_canard: { famille: 1, voyant: 'identite', couleur: 'canard',
+    texte: "L'identité de la société propriétaire a été vérifiée sur la base de l'extrait K-bis obtenu par l'étude et des données du registre national des entreprises. Dénomination, SIREN, forme sociale, siège et représentation légale sont concordants." },
+  identite_attente: { famille: 1, voyant: 'identite', couleur: 'jaune',
+    texte: "La vérification de l'identité de la société est en cours, dans l'attente de la réception de l'extrait K-bis sollicité par l'étude à la date du {date}." },
+  // Variante SANS DATE (08/11/2026) : le K-bis n'a pas de ligne au
+  // registre des pièces, aucune date de demande n'est donc connue. Dater
+  // la phrase du jour de l'analyse affirmait une diligence non faite.
+  identite_a_solliciter: { famille: 1, voyant: 'identite', couleur: 'jaune',
+    texte: "La vérification de l'identité de la société est en cours, dans l'attente de l'extrait K-bis, à obtenir par l'étude." },
+  identite_procedure: { famille: 1, voyant: 'identite', couleur: 'orange',
+    texte: "L'extrait K-bis fait apparaître une procédure ou une formalité en cours — {precision} — dont l'incidence sur la capacité de la société à disposer du bien reste à analyser." },
+  identite_discordance: { famille: 1, voyant: 'identite', couleur: 'carmin',
+    texte: "Une discordance est relevée entre la société désignée comme propriétaire au titre et la société immatriculée sous le SIREN {siren}." },
+  identite_cessee: { famille: 1, voyant: 'identite', couleur: 'orange',
+    texte: "La société auditée est déclarée cessée au registre national des entreprises. Sa capacité à disposer du bien est en cause : l'opération suppose d'identifier l'entité qui lui a succédé et de vérifier la publication du transfert de propriété." },
+  identite_absorbee: { famille: 1, voyant: 'identite', couleur: 'carmin',
+    texte: "La société auditée est déclarée cessée au registre national des entreprises, et le BODACC désigne {absorbante} (SIREN {siren}) comme société absorbante. Les biens publiés au nom de la société auditée relèvent aujourd'hui d'une autre personne morale : le vendeur au titre n'est plus la société immatriculée." },
+  identite_denominations: { famille: 1, voyant: 'identite', couleur: 'orange',
+    texte: "La société a été publiée sous {nombre} dénomination(s) successive(s) au BODACC — {denominations}. Chacune est à interroger au fichier immobilier : des biens peuvent rester publiés sous un nom antérieur." },
+  rbe_canard: { famille: 1, voyant: 'rbe', couleur: 'canard',
+    texte: "La composition des bénéficiaires effectifs déclarée par la société tête de groupe est identique à celle déclarée par les sociétés terminales du périmètre." },
+  rbe_divergence: { famille: 1, voyant: 'rbe', couleur: 'orange',
+    texte: "La composition des bénéficiaires effectifs déclarée par la société tête de groupe diverge de celle déclarée par {societe} : une branche du périmètre n'a peut-être pas été identifiée." },
 
-const BUDGET_MS = 40000;
-const EXPIRATION_JOURS = 30;
-const MAX_PARCELLES = 400;
-const PAR_LOT = 3;                    // parcelles moissonnées en parallèle
+  // ------------------------------------------------- 2. désignation
+  designation_canard: { famille: 2, voyant: 'designation', couleur: 'canard',
+    texte: "La désignation du bien reprend celle du titre de propriété, recoupée avec les données cadastrales et la base nationale des bâtiments, sans divergence relevée." },
+  designation_attente_titre: { famille: 2, voyant: 'designation', couleur: 'jaune',
+    texte: "La désignation est établie sur les seules données cadastrales — {parcelles} parcelles sur {communes} communes, {contenance} — dans l'attente de la communication du titre de propriété permettant le recoupement." },
+  designation_divergence: { famille: 2, voyant: 'designation', couleur: 'orange',
+    texte: "La désignation figurant au titre diverge des données cadastrales — {precision} — sans que cette divergence soit à ce stade expliquée." },
+  designation_muette: { famille: 2, voyant: 'designation', couleur: 'orange',
+    texte: "La désignation n'a pu être recoupée, le service cadastral ou la base nationale des bâtiments n'ayant pas répondu à la date de génération du présent audit." },
+  // AJOUTÉ le 11/09/2026. La descente sur les filiales (mémo § 4.4) fait
+  // entrer dans le périmètre les parcelles publiées au nom des sociétés
+  // liées. Sans ce bloc, les agrégats de `designation_attente_titre`
+  // additionnaient les patrimoines de plusieurs personnes morales et la
+  // désignation devenait fausse — un rapport aurait porté 3 828 parcelles
+  // au compte d'une société qui n'en publie que 1 636.
+  //
+  // La phrase NE DIT PAS que ces parcelles sont au vendeur : elle dit
+  // d'où elles viennent et ce qui reste à vérifier. C'est le pendant de
+  // la réserve « divergence entre le portefeuille déclaré et l'état
+  // résultant des bases publiques ».
+  // AJOUTÉ le 11/10/2026 (arbitrage JFD) : filiation cadastrale lue dans
+  // HISTO. JAUNE et jamais plus : la documentation cadastrale n'est qu'un
+  // appui, c'est l'état hypothécaire qui fait foi. La phrase ne conclut pas
+  // à une erreur du titre, elle désigne ce qu'il faut y vérifier.
+  designation_mouvement_cadastral: { famille: 2, voyant: 'designation', couleur: 'jaune',
+    texte: "Selon la documentation cadastrale, {nombre} parcelle(s) de la société auditée sont issues d'un mouvement cadastral (division, réunion ou remaniement) intervenu au cours des trente dernières années — {detail}. Il conviendra de vérifier que le titre de propriété vise ces parcelles sous leur référence actuelle, l'état hypothécaire faisant foi de leur filiation." },
+  designation_perimetre_elargi: { famille: 2, voyant: 'designation', couleur: 'orange',
+    texte: "Le périmètre examiné comprend en outre {autres} parcelle(s) publiées au nom d'une ou plusieurs autres personnes morales — {detail}. Ces parcelles n'entrent pas dans la désignation du bien de la société auditée : leur rattachement au périmètre résulte des liens relevés au BODACC, et le transfert de propriété reste à vérifier parcelle par parcelle au fichier immobilier." },
 
-const sql = () => neon(process.env.DATABASE_URL);
-const origine = req => `https://${req.headers['x-forwarded-host'] || req.headers.host}`;
-const nouvelId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  // -------------------------------------------------- 3. propriété
+  propriete_canard: { famille: 3, voyant: 'origine', couleur: 'canard',
+    texte: "L'origine de propriété a été vérifiée sur les trente dernières années. La société auditée est propriétaire du bien en vertu d'un acte du {date}, publié au service de la publicité foncière." },
+  propriete_attente: { famille: 3, voyant: 'origine', couleur: 'jaune',
+    texte: "L'analyse de l'origine de propriété est en cours, dans l'attente de la communication du titre et du résultat de l'analyse trentenaire." },
+  propriete_discontinuite: { famille: 3, voyant: 'origine', couleur: 'orange',
+    texte: "L'origine de propriété présente une discontinuité — {precision} — dont la régularisation reste à examiner." },
+  propriete_sans_titre: { famille: 3, voyant: 'origine', couleur: 'carmin',
+    texte: "La société auditée ne justifie pas d'un titre de propriété publié sur le bien." },
+  cadastre_pf_divergence: { famille: 3, voyant: 'cadastre_pf', couleur: 'orange',
+    texte: "Le propriétaire figurant au cadastre diverge de celui résultant du titre, sans incidence sur la propriété mais avec un impact possible sur la fiscalité locale." },
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  if (!process.env.DATABASE_URL) return res.status(500).json({ statut: 'echec', cause: 'DATABASE_URL absente du projet RISQUES.' });
-  if (!process.env.BLOB_READ_WRITE_TOKEN) return res.status(500).json({ statut: 'echec', cause: 'Stockage de fichiers Vercel non relié au projet RISQUES (BLOB_READ_WRITE_TOKEN absente).' });
-  if (!process.env.GEORISQUES_TOKEN) return res.status(500).json({ statut: 'echec', cause: 'GEORISQUES_TOKEN absente.' });
-  try {
-    if (req.method === 'POST') return await creer(req, res);
-    // commande par simple adresse (appli autonome, essais) :
-    // ?parcelles=62160-000-XM-0307,62160-000-XM-0308&societe=…&dossier=…
-    if (req.query.parcelles) return await creer(req, res, { societe: req.query.societe || null, dossier: req.query.dossier || null,
-      appelant: 'adresse', parcelles: String(req.query.parcelles).split(/[,;\s]+/).filter(Boolean) });
-    if (req.query.travail) return await interroger(req, res, String(req.query.travail));
-    return res.status(400).json({ statut: 'echec', cause: 'POST pour commander un portefeuille, ou GET ?travail=… pour l\'interroger.' });
-  } catch (e) {
-    return res.status(500).json({ statut: 'echec', cause: e.message, pile: (e.stack || '').split('\n').slice(0, 5) });
-  }
-}
+  // ----------------------------------------- 4. organisation ensemble
+  organisation_attente: { famille: 4, voyant: 'regime', couleur: 'jaune',
+    texte: "L'analyse est en cours, dans l'attente du règlement de copropriété, de l'état descriptif de division et des procès-verbaux d'assemblée générale des trois derniers exercices." },
+  organisation_canard: { famille: 4, voyant: 'regime', couleur: 'canard',
+    texte: "Les documents de l'ensemble immobilier ont été examinés. Aucun élément n'affecte la jouissance ou la cessibilité du lot." },
+  organisation_gestion: { famille: 4, voyant: 'gestion', couleur: 'orange',
+    texte: "Les documents de la copropriété font apparaître {precision} : travaux votés non appelés, appels de fonds impayés ou procédure engagée contre le syndicat, dont la charge est susceptible de suivre le lot." },
+  organisation_regime_incertain: { famille: 4, voyant: 'regime', couleur: 'orange',
+    texte: "Le régime de l'ensemble immobilier est incertain — {precision} — la désignation du bien cédé doit être fiabilisée." },
+  organisation_discordance: { famille: 4, voyant: 'regime', couleur: 'carmin',
+    texte: "Le vendeur ne figure pas comme copropriétaire du lot dans les documents de la copropriété communiqués, en discordance avec le titre de propriété." },
 
-// ---------------------------------------------------------------------------------------
-// COMMANDE
-// ---------------------------------------------------------------------------------------
-async function creer(req, res, commande = null) {
-  // la requête est passée telle quelle (ses en-têtes donnent l'adresse du serveur) ;
-  // la commande par adresse arrive à part
-  const c = commande || (typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {}));
-  let groupes = Array.isArray(c.groupes) ? c.groupes : null;
-  const autonome = !groupes;
-  if (autonome) {
-    // appli autonome : RISQUES retrie par commune, section, numéro (16/09/2026)
-    const refs = (Array.isArray(c.parcelles) ? c.parcelles : []).map(String).sort(triReference);
-    groupes = refs.map((r, i) => ({ numero: String(i + 1), parcelles: [r] }));
-  }
-  groupes = groupes.map(g => ({ numero: String(g.numero ?? ''), parcelles: (g.parcelles || []).map(x => String(x).trim()).filter(Boolean) }))
-                   .filter(g => g.parcelles.length);
-  const n = groupes.reduce((s, g) => s + g.parcelles.length, 0);
-  if (!n) return res.status(400).json({ statut: 'echec', cause: 'Aucune parcelle dans la commande.' });
-  if (n > MAX_PARCELLES) return res.status(400).json({ statut: 'echec', cause: `Plus de ${MAX_PARCELLES} parcelles : scinder la commande.` });
+  // ------------------------------------------------ 5. hypothécaire
+  hypo_attente: { famille: 5, voyant: 'inscriptions', couleur: 'jaune',
+    texte: "L'analyse est en cours, dans l'attente de la réception de l'état hypothécaire requis à la date du {date}, et de la copie des actes de prêt en cours." },
+  // Variante SANS DATE : tant que l'état hypothécaire n'est pas saisi
+  // dans MARTEAU, aucune réquisition n'est partie (règle du 08/11/2026).
+  hypo_a_solliciter: { famille: 5, voyant: 'inscriptions', couleur: 'jaune',
+    texte: "L'analyse est en cours ; l'état hypothécaire est à requérir par l'étude, et la copie des actes de prêt en cours est attendue du client." },
+  hypo_canard: { famille: 5, voyant: 'inscriptions', couleur: 'canard',
+    texte: "L'état hypothécaire ne révèle aucune inscription grevant le bien. Les servitudes relevées au titre ne font pas obstacle à l'opération et le bien dispose d'un accès direct à la voie publique." },
+  hypo_inscriptions: { famille: 5, voyant: 'inscriptions', couleur: 'orange',
+    texte: "L'état hypothécaire révèle des inscriptions en cours — {precision} — dont la mainlevée ou le remboursement reste à organiser." },
+  hypo_exigibilite: { famille: 5, voyant: 'inscriptions', couleur: 'carmin',
+    texte: "L'acte de prêt comporte une clause d'exigibilité anticipée en cas de cession du bien." },
+  nature_droit_orange: { famille: 5, voyant: 'nature_droit', couleur: 'orange',
+    texte: "La société auditée n'est titulaire que d'un droit d'occupation ou d'un droit réel démembré sur {parcelles} parcelle(s) — codes de droit {codes} — et non de la pleine propriété. La nature exacte de ce droit et sa transmissibilité sont à qualifier au titre." },
+  nature_droit_canard: { famille: 5, voyant: 'nature_droit', couleur: 'canard',
+    texte: "La société auditée est pleine propriétaire de l'ensemble des parcelles du périmètre selon les données cadastrales." },
+  enclave_carmin: { famille: 5, voyant: 'servitudes', couleur: 'carmin',
+    texte: "Le bien est enclavé, l'unité foncière constituée des parcelles contiguës appartenant au vendeur ne disposant d'aucun accès à la voie publique, sans servitude de passage constituée par titre." },
 
-  const id = nouvelId();
-  const etat = { phase: 'moisson', autonome, groupes, faites: {}, biens: null, sections: {}, erps: [], horodatage: new Date().toISOString() };
-  await sql()`INSERT INTO risques_travail (id, societe, appelant, dossier, etat)
-              VALUES (${id}, ${c.societe || null}, ${c.appelant || null}, ${c.dossier || null}, ${JSON.stringify(etat)}::jsonb)`;
-  nettoyer().catch(() => {});        // efface au passage quelques travaux expirés
-  return res.status(202).json({ statut: 'en_cours', travail: id, interroger: `${origine(req)}/api/portefeuille?travail=${id}`, parcelles: n, biens_annonces: groupes.length });
-}
+  // --------------------------------------------------- 6. urbanisme
+  urba_attente: { famille: 6, voyant: 'autorisations', couleur: 'jaune',
+    texte: "La vérification des autorisations d'urbanisme est en cours, dans l'attente de la réponse de la commune sollicitée à la date du {date}." },
+  // Variante SANS DATE : tant que la demande à la commune n'est pas
+  // marquée « demandée » dans MARTEAU (règle du 08/11/2026).
+  urba_a_solliciter: { famille: 6, voyant: 'autorisations', couleur: 'jaune',
+    texte: "La vérification des autorisations d'urbanisme est en cours ; la commune est à solliciter." },
+  urba_canard: { famille: 6, voyant: 'autorisations', couleur: 'canard',
+    texte: "Les autorisations d'urbanisme ont été confirmées par la commune. Les constructions existantes sont couvertes et l'usage constaté est conforme à la destination autorisée." },
+  urba_sitadel: { famille: 6, voyant: 'autorisations', couleur: 'orange',
+    texte: "Une autorisation figure à la base Sitadel — {precision} — sans confirmation de la commune ; son rattachement à la parcelle, opéré par croisement géographique, reste à vérifier." },
+  urba_surface: { famille: 6, voyant: 'autorisations', couleur: 'orange',
+    texte: "La surface de plancher résultant des autorisations d'urbanisme diverge de la surface figurant à la désignation du titre, sans explication à ce stade." },
+  urba_usage_carmin: { famille: 6, voyant: 'usage', couleur: 'carmin',
+    texte: "L'usage constaté du bien diffère de la destination fixée par l'autorisation d'urbanisme." },
+  zone_attente: { famille: 6, voyant: 'zone', couleur: 'jaune',
+    texte: "La vérification de l'appartenance du bien à un lotissement ou à une zone d'aménagement concerté est en cours auprès de la commune." },
+  zone_cahier: { famille: 6, voyant: 'zone', couleur: 'orange',
+    texte: "Le bien est inclus dans un lotissement ou une zone d'aménagement concerté dont le cahier des charges n'est pas communiqué." },
+  // ATTENTION — `assurance_attente` AFFIRME que des travaux ont été
+  // relevés. Elle ne peut donc servir QUE lorsqu'une source a réellement
+  // rendu des autorisations. Tant que rien n'est raccordé, c'est
+  // `assurance_non_verifie` qu'il faut poser : un rapport signé ne peut
+  // pas énoncer un constat qui n'a pas été fait (corrigé le 09/09/2026,
+  // la phrase partait sur tout dossier sans qu'aucune source soit lue).
+  assurance_attente: { famille: 6, voyant: 'assurance', couleur: 'jaune',
+    texte: "Des travaux soumis à autorisation ont été relevés dans les dix dernières années. La justification des assurances dommages-ouvrage et de responsabilité décennale est attendue." },
+  assurance_non_verifie: { famille: 6, voyant: 'assurance', couleur: 'jaune',
+    texte: "Les travaux réalisés sur le bien n'ont pas encore été recherchés par l'étude — {raison}. La justification des assurances dommages-ouvrage et de responsabilité décennale est attendue du client pour les travaux des dix dernières années." },
+  assurance_canard: { famille: 6, voyant: 'assurance', couleur: 'canard',
+    texte: "Aucun travail soumis à autorisation n'a été relevé dans les dix dernières années." },
+  assurance_orange: { famille: 6, voyant: 'assurance', couleur: 'orange',
+    texte: "Des travaux susceptibles de relever de la garantie décennale ont été réalisés sans qu'une attestation d'assurance soit produite." },
 
-// ---------------------------------------------------------------------------------------
-// INTERROGATION : chaque appel fait avancer le travail d'une tranche
-// ---------------------------------------------------------------------------------------
-async function interroger(req, res, id) {
-  const db = sql();
-  const [t] = await db`SELECT * FROM risques_travail WHERE id = ${id}`;
-  if (!t) return res.status(404).json({ statut: 'echec', cause: 'Travail inconnu.' });
-  if (t.statut === 'termine' && t.expire_le && new Date(t.expire_le) < new Date()) {
-    await expirer(t);
-    return res.status(410).json({ statut: 'expire', cause: `Rapport expiré (${EXPIRATION_JOURS} jours) : le commander à nouveau.` });
-  }
-  if (t.statut === 'expire') return res.status(410).json({ statut: 'expire' });
-  if (t.statut === 'termine') return res.status(200).json(reponseFinale(t));
-  if (t.statut === 'echec') return res.status(200).json({ statut: 'echec', cause: t.erreur });
+  // ------------------------------------------------- 7. diagnostics
+  diag_dpe_trouve: { famille: 7, voyant: 'diagnostics', couleur: 'jaune',
+    texte: "La base de l'ADEME fait apparaître un diagnostic de performance énergétique établi le {date}, portant l'étiquette {etiquette}. Le document lui-même est attendu du client." },
+  diag_dpe_muet: { famille: 7, voyant: 'diagnostics', couleur: 'jaune',
+    texte: "La base de l'ADEME ne comporte aucun diagnostic de performance énergétique pour ce bien. Il est demandé au client s'il a déjà mandaté un diagnostiqueur." },
+  diag_liste: { famille: 7, voyant: 'diagnostics', couleur: 'jaune',
+    texte: "Au regard de l'usage résultant du titre et des autorisations d'urbanisme, et de la situation du bien au regard des arrêtés préfectoraux applicables, les diagnostics suivants sont attendus du client : {liste}." },
+  diag_canard: { famille: 7, voyant: 'diagnostics', couleur: 'canard',
+    texte: "Le dossier de diagnostics techniques a été reçu et examiné, sans anomalie affectant l'opération." },
+  diag_carmin: { famille: 7, voyant: 'diagnostics', couleur: 'carmin',
+    texte: "Les diagnostics reçus révèlent une anomalie appelant un traitement préalable — {precision}." },
 
-  // verrou : une seule tranche à la fois ; un verrou de plus de 70 s est périmé
-  const [pris] = await db`UPDATE risques_travail SET verrou = now()
-                          WHERE id = ${id} AND (verrou IS NULL OR verrou < now() - interval '70 seconds') RETURNING id`;
-  if (!pris) return res.status(200).json(progression(t.etat, 'tranche en cours, interroger de nouveau'));
+  // ---------------------------------------------- 8. environnement
+  env_canard: { famille: 8, voyant: 'risques', couleur: 'canard',
+    texte: "Les vérifications faites par l'étude à partir des bases publiques interrogées à la date du {date} concordent avec l'état des risques communiqué par le client." },
+  env_attente_client: { famille: 8, voyant: 'risques', couleur: 'jaune',
+    texte: "Les vérifications ont été faites par l'étude. L'état des risques du client est attendu pour recoupement." },
+  env_non_verifie: { famille: 8, voyant: 'risques', couleur: 'jaune',
+    texte: "Les vérifications de l'étude sur les bases publiques n'ont pas encore été faites pour ce dossier — {raison}. L'état des risques du client est attendu." },
+  env_divergence: { famille: 8, voyant: 'risques', couleur: 'orange',
+    texte: "L'état des risques communiqué par le client diverge des vérifications faites par l'étude — {precision}." },
+  env_ppr: { famille: 8, voyant: 'risques', couleur: 'orange',
+    texte: "Le bien est situé dans le périmètre d'un plan de prévention des risques — {precision} — dont les prescriptions restent à analyser." },
+  env_sol: { famille: 8, voyant: 'risques', couleur: 'orange',
+    texte: "Une ancienne activité industrielle est recensée sur la parcelle ou à proximité immédiate, sans qu'un état des sols ait été établi." },
+  env_zone_rouge: { famille: 8, voyant: 'risques', couleur: 'carmin',
+    texte: "La parcelle est située en zone rouge du plan de prévention des risques — {precision} — emportant inconstructibilité ou prescriptions lourdes." },
+  bati_carmin: { famille: 8, voyant: 'bati', couleur: 'carmin',
+    texte: "L'immeuble fait l'objet d'un arrêté de péril ou d'insalubrité en cours." },
 
-  const t0 = Date.now(), etat = t.etat, ctx = { db, t, etat, origine: origine(req), t0 };
-  try {
-    if (etat.phase === 'moisson') await moissonner(ctx);
-    if (etat.phase === 'regroupement') regrouper(etat);
-    if (etat.phase === 'rendu') await rendre(ctx);
-    if (etat.phase === 'assemblage' && Date.now() - t0 < 15000) {
-      const fin = await assembler(ctx);
-      await db`UPDATE risques_travail SET statut = 'termine', etat = ${JSON.stringify(etat)}::jsonb, rapport_url = ${fin.url},
-               erps = ${JSON.stringify(etat.erps)}::jsonb, fichiers = ${JSON.stringify(fin.fichiers)}::jsonb,
-               expire_le = now() + interval '30 days', verrou = NULL, maj_le = now() WHERE id = ${id}`;
-      const [f] = await db`SELECT * FROM risques_travail WHERE id = ${id}`;
-      return res.status(200).json(reponseFinale(f));
-    }
-    await db`UPDATE risques_travail SET etat = ${JSON.stringify(etat)}::jsonb, verrou = NULL, maj_le = now() WHERE id = ${id}`;
-    return res.status(200).json(progression(etat));
-  } catch (e) {
-    await db`UPDATE risques_travail SET etat = ${JSON.stringify(etat)}::jsonb, verrou = NULL, erreur = ${e.message}, maj_le = now() WHERE id = ${id}`;
-    // une tranche qui échoue se retente au coup suivant (motif retenu le 14/09 contre le rappel)
-    return res.status(200).json({ ...progression(etat), avertissement: `tranche interrompue (${e.message}), reprise à la prochaine interrogation` });
-  }
-}
+  // -------------------------------------------- 9. exploitation
+  exploit_attente: { famille: 9, voyant: 'exploitation', couleur: 'jaune',
+    texte: "L'analyse de l'occupation est en cours, dans l'attente des baux en cours et de l'état locatif." },
+  exploit_canard: { famille: 9, voyant: 'exploitation', couleur: 'canard',
+    texte: "Les baux ont été examinés. Le fichier SIRENE ne fait apparaître aucun établissement domicilié à l'adresse qui serait absent de l'état locatif." },
+  exploit_sirene: { famille: 9, voyant: 'exploitation', couleur: 'orange',
+    texte: "Un établissement est domicilié à l'adresse du bien sans figurer à l'état locatif — {precision}." },
+  exploit_sans_titre: { famille: 9, voyant: 'exploitation', couleur: 'carmin',
+    texte: "Le bien est occupé sans titre, ou une clause du bail fait obstacle à la cession." },
+  exploit_titularite: { famille: 9, voyant: 'exploitation', couleur: 'carmin',
+    texte: "Le bail a été consenti en considération de la personne du preneur — clause d'agrément ou d'incessibilité — de sorte que sa titularité ne peut être transmise sans l'accord du bailleur ou est susceptible de résiliation en cas de cession." },
+  contrats_attente: { famille: 9, voyant: 'contrats', couleur: 'jaune',
+    texte: "Les contrats attachés à l'immeuble — gestion, entretien, fourniture d'énergie, abonnements — sont attendus du client." },
+  contrats_canard: { famille: 9, voyant: 'contrats', couleur: 'canard',
+    texte: "Les contrats attachés à l'immeuble ont été examinés. Aucune clause ne fait obstacle à la cession et aucun engagement de durée n'est à reprendre." },
+  contrats_orange: { famille: 9, voyant: 'contrats', couleur: 'orange',
+    texte: "Certains contrats attachés à l'immeuble comportent une durée d'engagement ou un préavis de résiliation à traiter avant la cession — {precision}." },
 
-function progression(etat, message) {
-  const total = etat.groupes.reduce((s, g) => s + g.parcelles.length, 0);
-  const fait = etat.phase === 'moisson' ? Object.keys(etat.faites).length
-             : (etat.biens ? Object.keys(etat.sections).length : 0);
-  const sur = etat.phase === 'moisson' ? total : (etat.biens ? etat.biens.length : total);
-  const libelles = { moisson: 'Interrogation des bases, parcelle par parcelle', regroupement: 'Regroupement des parcelles',
-                     rendu: 'Rédaction du rapport et des états des risques, bien par bien', assemblage: 'Assemblage du rapport de portefeuille' };
-  return { statut: 'en_cours', phase: etat.phase, fait, total: sur, message: message || libelles[etat.phase] };
-}
+  // ------------------------------------------------- 10. fiscalité
+  fisc_actif_attente: { famille: 10, voyant: 'actif', couleur: 'jaune',
+    texte: "L'analyse du régime fiscal de l'actif est en cours, dans l'attente de la communication des titres d'acquisition et du détail des immobilisations." },
+  fisc_actif_canard: { famille: 10, voyant: 'actif', couleur: 'canard',
+    texte: "Le régime fiscal applicable à l'actif a été examiné au vu des titres, sans élément appelant une réserve." },
+  fisc_actif_regime: { famille: 10, voyant: 'actif', couleur: 'orange',
+    texte: "Le bien a été acquis sous un régime — {precision} — dont les conséquences en cas de cession restent à examiner." },
+  fisc_engagement: { famille: 10, voyant: 'actif', couleur: 'orange',
+    texte: "L'acte d'acquisition comporte un engagement de construire souscrit le {date}, dont l'exécution dans le délai n'est pas établie, exposant le vendeur à un redressement des droits de mutation." },
+  fisc_tresor: { famille: 10, voyant: 'actif', couleur: 'orange',
+    texte: "L'état hypothécaire révèle une inscription d'hypothèque légale au profit du Trésor, révélatrice d'une dette fiscale dont l'apurement reste à examiner." },
+  fisc_taxe_fonciere: { famille: 10, voyant: 'actif', couleur: 'orange',
+    texte: "La taxe foncière n'est acquittée que sur une partie des parcelles composant l'actif, ou sur une base ne tenant pas compte des constructions existantes. L'acquéreur doit s'attendre à une régularisation." },
+  fisc_cession_attente: { famille: 10, voyant: 'cession', couleur: 'jaune',
+    texte: "La détermination du régime de cession est en cours, dans l'attente des pièces sollicitées auprès de l'expert-comptable de la société : acte d'acquisition avec les frais, tableau des immobilisations et des amortissements, factures de travaux immobilisés, détail du compte 2013 en cas de fusion ou d'apport." },
+  fisc_cession_canard: { famille: 10, voyant: 'cession', couleur: 'canard',
+    texte: "La qualité du vendeur au regard de l'impôt sur les sociétés et de la taxe sur la valeur ajoutée a été vérifiée, le régime applicable à la cession est déterminé." },
+  fisc_cession_tva: { famille: 10, voyant: 'cession', couleur: 'orange',
+    texte: "La qualité du vendeur laisse subsister une incertitude sur le régime de taxe sur la valeur ajoutée applicable à la cession." },
+  fisc_plus_value: { famille: 10, voyant: 'cession', couleur: 'orange',
+    texte: "La valeur nette comptable de l'immeuble au bilan est sensiblement inférieure aux valeurs constatées pour les transactions comparables. L'imposition de la plus-value devra être prise en compte dans la détermination du prix net vendeur." },
+};
 
-function reponseFinale(t) {
-  return { statut: 'termine', rapport: t.rapport_url,
-           erps: Array.isArray(t.erps) ? t.erps : [],
-           expire_le: t.expire_le };
-}
-
-// ---------------------------------------------------------------------------------------
-// 1. MOISSON
-// ---------------------------------------------------------------------------------------
-async function moissonner(ctx) {
-  const { etat } = ctx;
-  const jeton = process.env.GEORISQUES_TOKEN;
-  const restantes = etat.groupes.flatMap(g => g.parcelles).filter(r => !etat.faites[r]);
-  while (restantes.length && Date.now() - ctx.t0 < BUDGET_MS - 8000) {
-    const lot = restantes.splice(0, PAR_LOT);
-    await Promise.all(lot.map(async ref => {
-      try {
-        const bien = await geometrieParcelle(ref);
-        if (!bien.obtenu) { etat.faites[ref] = { ref, erreur: bien.cause || 'parcelle introuvable au cadastre' }; return; }
-        const [donnees, adresse] = await Promise.all([collecterSynthese(bien, jeton), adressePostale(bien.centre)]);
-        const rubriques = construireRubriques(donnees, qualifier(donnees), bien);
-        etat.faites[ref] = {
-          ref, adresse: adresse ? adresse.libelle : libelleCommune(donnees), commune: libelleCommune(donnees),
-          rubriques: rubriques.map(({ carte, ...r }) => ({ ...r, carte: carte ? { service: carte.service, couche: carte.couche, echelle: carte.echelle } : null })),
-          signature: rubriques.map(r => r.statut),
-          jaune: rubriques.some(r => r.statut === 'non_obtenu'),
-          sources: sources(donnees, new Date(etat.horodatage))
-        };
-      } catch (e) { etat.faites[ref] = { ref, erreur: e.message }; }
-    }));
-  }
-  if (!restantes.length) etat.phase = 'regroupement';
-}
-
-// ---------------------------------------------------------------------------------------
-// 2. REGROUPEMENT — groupes de l'appelant repris tels quels ; seule la parcelle divergente sort
-// ---------------------------------------------------------------------------------------
-function regrouper(etat) {
-  const biens = [];
-  for (const g of etat.groupes) {
-    const ok = g.parcelles.map(r => etat.faites[r]).filter(x => x && !x.erreur);
-    const ko = g.parcelles.map(r => etat.faites[r]).filter(x => x && x.erreur);
-    const sig = x => x.signature.join('|');
-    // signature majoritaire (à égalité, celle de la première parcelle dans l'ordre de l'appelant)
-    const compte = {};
-    ok.forEach(x => { compte[sig(x)] = (compte[sig(x)] || 0) + 1; });
-    const majo = ok.length ? Object.keys(compte).sort((a, b) => compte[b] - compte[a] || ok.findIndex(x => sig(x) === a) - ok.findIndex(x => sig(x) === b))[0] : null;
-    const principal = ok.filter(x => sig(x) === majo), divergents = ok.filter(x => sig(x) !== majo);
-    const eclate = divergents.length > 0 || (ko.length > 0 && ok.length > 0);
-    let k = 1;
-    const numero = () => eclate ? `${g.numero}.${k++}` : g.numero;
-    if (principal.length) biens.push({ numero: numero(), groupe: g.numero, refs: principal.map(x => x.ref), ref: principal[0].ref, mention: null, jaune: principal.some(x => x.jaune) });
-    for (const x of divergents) {
-      const ecarts = x.rubriques.filter((r, i) => r.statut !== principal[0].signature[i]).map(r => `${r.numero}. ${r.intitule}`);
-      biens.push({ numero: numero(), groupe: g.numero, refs: [x.ref], ref: x.ref, jaune: x.jaune,
-        mention: `Parcelle relevant du groupe ${g.numero}, isolée de celui-ci en raison d'un élément particulier : ${ecarts.join(' ; ')}.` });
-    }
-    for (const x of ko) biens.push({ numero: numero(), groupe: g.numero, refs: [x.ref], ref: null, jaune: true, introuvable: x.erreur,
-      mention: `Parcelle du groupe ${g.numero} non traitée : ${x.erreur}.` });
-  }
-  etat.biens = biens;
-  etat.phase = 'rendu';
-}
-
-// ---------------------------------------------------------------------------------------
-// 3. RENDU — une section de rapport et un ERP par bien
-// ---------------------------------------------------------------------------------------
-async function rendre(ctx) {
-  const { etat, t } = ctx;
-  for (let i = 0; i < etat.biens.length; i++) {
-    if (etat.sections[i]) continue;
-    if (Date.now() - ctx.t0 > BUDGET_MS - 14000) return;
-    const b = etat.biens[i];
-    if (!b.ref) { etat.sections[i] = { vide: true }; continue; }
-    const r0 = etat.faites[b.ref];
-    const bien = await geometrieParcelle(b.ref);
-    const commune = r0.commune || '';
-    const identite = {
-      titre: `${b.numero ? `Groupe ${b.numero} — ` : ''}${commune}`.trim(),
-      court: `${b.numero ? `groupe ${b.numero}` : b.ref}`,
-      mention: b.mention,
-      lignes: [['Adresse', r0.adresse || '—'], ['Référence(s) cadastrale(s)', b.refs.join(', ')],
-               ...(b.refs.length > 1 ? [['Cartes', `centrées sur la parcelle ${b.ref}`]] : []),
-               ['Contenance', `${bien.contenance || '—'} m² (parcelle ${b.ref})`]]
-    };
-    const sec = await composerSection({ ref: b.refs.join(', '), dossier: t.dossier, bien, adresse: { libelle: r0.adresse },
-      donnees: {}, rubriques: r0.rubriques, horodatage: new Date(etat.horodatage), avecCartes: true, identite });
-    const depot = await put(`risques/portefeuille/${t.id}/section-${String(i + 1).padStart(3, '0')}.pdf`, Buffer.from(sec.octets),
-                            { access: 'public', addRandomSuffix: true, contentType: 'application/pdf' });
-    etat.sections[i] = { url: depot.url, pages: sec.pages, liens: sec.liens, ancres: sec.ancres };
-    // ERP du bien : un fichier par bien (15/09/2026), produit par la fonction ERP elle-même
-    try {
-      const r = await fetch(`${ctx.origine}/api/erp?parcelle=${encodeURIComponent(b.ref)}${t.dossier ? `&dossier=${encodeURIComponent(t.dossier)}` : ''}`);
-      if (r.ok && /pdf/i.test(r.headers.get('content-type') || '')) {
-        const e = await put(`risques/portefeuille/${t.id}/ERP_${b.numero || i + 1}_${b.ref}.pdf`, Buffer.from(await r.arrayBuffer()),
-                            { access: 'public', addRandomSuffix: true, contentType: 'application/pdf' });
-        etat.erps.push({ numero: b.numero || String(i + 1), url: e.url });   // dans l'ordre des biens
-      }
-    } catch (e) { /* l'ERP manquant se lit dans la réponse finale */ }
-  }
-  etat.phase = 'assemblage';
-}
-
-// ---------------------------------------------------------------------------------------
-// 4. ASSEMBLAGE
-// ---------------------------------------------------------------------------------------
-const NUIT = rgb(0.059, 0.133, 0.220), CANARD = rgb(0.200, 0.514, 0.545), GRIS = rgb(0.396, 0.490, 0.588),
-      JAUNE = rgb(1.0, 0.85, 0.30), CARMIN = rgb(0.627, 0.063, 0.251);
-const PAGE = { l: 595.28, h: 841.89 }, MG = 56, BAS = 64;
-
-async function assembler(ctx) {
-  const { etat, t } = ctx;
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const serifG = await doc.embedFont(police('GELASIO_BOLD')), serif = await doc.embedFont(police('GELASIO_REGULAR'));
-  const sans = await doc.embedFont(police('SANS_REGULAR')), sansG = await doc.embedFont(police('SANS_BOLD'));
-  const date = new Date(etat.horodatage).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
-
-  // page de garde UNIQUE et sobre : nom de la société et date (16/09/2026)
-  const garde = doc.addPage([PAGE.l, PAGE.h]);
-  garde.drawText('RAPPORT DE SYNTHÈSE — RISQUES', { x: MG, y: PAGE.h - 180, size: 22, font: serifG, color: NUIT });
-  garde.drawText('Portefeuille immobilier', { x: MG, y: PAGE.h - 208, size: 14, font: serif, color: CANARD });
-  garde.drawLine({ start: { x: MG, y: PAGE.h - 224 }, end: { x: PAGE.l - MG, y: PAGE.h - 224 }, thickness: 0.6, color: GRIS });
-  garde.drawText(t.societe || 'Société non précisée', { x: MG, y: PAGE.h - 270, size: 18, font: sansG, color: NUIT });
-  garde.drawText(`Établi le ${date}`, { x: MG, y: PAGE.h - 296, size: 11, font: sans, color: GRIS });
-  garde.drawText(`${etat.biens.length} bien${etat.biens.length > 1 ? 's' : ''}`, { x: MG, y: PAGE.h - 314, size: 11, font: sans, color: GRIS });
-
-  // sommaire : une ligne à plat par bien, numéro de groupe entre parenthèses, pastille
-  // JAUNE si documentation incomplète, sinon BLANCHE (16/09 et 24/09/2026)
-  const PAR_PAGE = 36, nbSommaire = Math.max(1, Math.ceil(etat.biens.length / PAR_PAGE));
-  const pagesSommaire = Array.from({ length: nbSommaire }, () => doc.addPage([PAGE.l, PAGE.h]));
-  let debut = 1 + nbSommaire;
-  const debutDe = [];
-  for (let i = 0; i < etat.biens.length; i++) { debutDe[i] = debut; debut += (etat.sections[i] && etat.sections[i].pages) || 0; }
-
-  // sections
-  const toutes = [];
-  for (let i = 0; i < etat.biens.length; i++) {
-    const s = etat.sections[i];
-    if (!s || !s.url) continue;
-    const src = await PDFDocument.load(await (await fetch(s.url)).arrayBuffer());
-    const copies = await doc.copyPages(src, src.getPageIndices());
-    copies.forEach(p => doc.addPage(p));
-    toutes.push({ i, pages: copies, s });
-  }
-  // liens internes de chaque section (carte → annexe), recréés sur les pages copiées
-  for (const { pages, s } of toutes) for (const l of s.liens || []) {
-    const a = s.ancres && s.ancres[l.numero];
-    if (a && pages[l.page] && pages[a.page]) lier(doc, pages[l.page], l.rect, pages[a.page], a.y);
-  }
-  // sommaire écrit maintenant que les pages sont connues
-  const pagesDoc = doc.getPages();
-  etat.biens.forEach((b, i) => {
-    const p = pagesSommaire[Math.floor(i / PAR_PAGE)], k = i % PAR_PAGE;
-    if (k === 0) {
-      p.drawText(Math.floor(i / PAR_PAGE) ? 'Sommaire (suite)' : 'Sommaire', { x: MG, y: PAGE.h - 80, size: 16, font: serifG, color: NUIT });
-      p.drawText('Pastille jaune : documentation incomplète (une base n\'a pas répondu ou une rubrique n\'est pas renseignée).', { x: MG, y: PAGE.h - 98, size: 8, font: sans, color: GRIS });
-    }
-    const y = PAGE.h - 124 - k * 18;
-    p.drawCircle({ x: MG + 4, y: y + 3, size: 3.6, color: b.jaune ? JAUNE : rgb(1, 1, 1), borderColor: GRIS, borderWidth: 0.6 });
-    const texte = `${b.numero ? `(${b.numero}) ` : ''}${b.refs.join(', ')}${etat.faites[b.ref] && etat.faites[b.ref].adresse ? ` — ${etat.faites[b.ref].adresse}` : ''}`;
-    p.drawText(couper(texte, sans, 9, PAGE.l - 2 * MG - (b.introuvable ? 250 : 60)), { x: MG + 14, y, size: 9, font: sans, color: b.introuvable ? CARMIN : NUIT });
-    const s = etat.sections[i];
-    if (s && s.url) {
-      const num = String(debutDe[i] + 1), w = sans.widthOfTextAtSize(num, 9);
-      p.drawText(num, { x: PAGE.l - MG - w, y, size: 9, font: sans, color: CANARD });
-      lier(doc, p, [MG, y - 4, PAGE.l - MG, y + 11], pagesDoc[debutDe[i]], PAGE.h - 50);
-    } else {
-      // le motif est connu (référence absente du cadastre, panne d'une source) : on le dit
-      const motif = `non traité${b.introuvable ? ` — ${b.introuvable}` : ''}`;
-      const m = couper(motif, sans, 8, 230);
-      p.drawText(m, { x: PAGE.l - MG - sans.widthOfTextAtSize(m, 8), y, size: 8, font: sans, color: CARMIN });
-    }
-  });
-
-  // une seule liste des bases interrogées en fin de rapport global (16/09/2026)
-  const src = (Object.values(etat.faites).find(x => x && x.sources) || {}).sources || [];
-  let pg = doc.addPage([PAGE.l, PAGE.h]), y = PAGE.h - 80;
-  pg.drawText('Bases interrogées', { x: MG, y, size: 14, font: serifG, color: NUIT }); y -= 24;
-  for (const [k, v] of src) {
-    for (const l of decouper(`${k} — ${v}`, sans, 8.5, PAGE.l - 2 * MG)) {
-      if (y < BAS + 20) { pg = doc.addPage([PAGE.l, PAGE.h]); y = PAGE.h - 80; }
-      pg.drawText(l, { x: MG, y, size: 8.5, font: sans, color: GRIS }); y -= 12;
-    }
-    y -= 4;
-  }
-
-  // pagination : date d'édition et numéro de page sur chaque page (16/09/2026)
-  const tout = doc.getPages(), N = tout.length;
-  tout.forEach((p, i) => {
-    const d = `Rapport du ${date} — ${i + 1} / ${N}`, w = sans.widthOfTextAtSize(d, 7.5);
-    if (i <= nbSommaire) p.drawLine({ start: { x: MG, y: BAS - 18 }, end: { x: PAGE.l - MG, y: BAS - 18 }, thickness: 0.5, color: GRIS });
-    if (i <= nbSommaire) p.drawText(couper(t.societe || '', sans, 7.5, PAGE.l - 2 * MG - 170), { x: MG, y: BAS - 32, size: 7.5, font: sans, color: GRIS });
-    p.drawText(d, { x: PAGE.l - MG - w, y: BAS - 32, size: 7.5, font: sans, color: GRIS });
-  });
-
-  const nom = `ERP_${new Date(etat.horodatage).toISOString().slice(0, 10).replace(/-/g, '')}_${nomFichier(t.societe || 'portefeuille')}.pdf`;
-  const depot = await put(`risques/portefeuille/${t.id}/${nom}`, Buffer.from(await doc.save()), { access: 'public', addRandomSuffix: true, contentType: 'application/pdf' });
-  const fichiers = [depot.url, ...Object.values(etat.sections).map(s => s && s.url).filter(Boolean), ...etat.erps.map(e => e.url)];
-  return { url: depot.url, fichiers };
-}
-
-function lier(doc, page, rect, cible, y) {
-  const annot = doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: rect, Border: [0, 0, 0],
-    Dest: doc.context.obj([cible.ref, 'XYZ', null, y, null]) }));
-  let annots = page.node.lookup(PDFName.of('Annots'));
-  if (!annots) { annots = doc.context.obj([]); page.node.set(PDFName.of('Annots'), annots); }
-  annots.push(annot);
-}
-
-// ---------------------------------------------------------------------------------------
-// EXPIRATION À TRENTE JOURS
-// ---------------------------------------------------------------------------------------
-async function expirer(t) {
-  try { if (Array.isArray(t.fichiers) && t.fichiers.length) await del(t.fichiers); } catch (e) {}
-  await sql()`UPDATE risques_travail SET statut = 'expire', etat = '{}'::jsonb, maj_le = now() WHERE id = ${t.id}`;
-}
-async function nettoyer() {
-  const vieux = await sql()`SELECT * FROM risques_travail WHERE statut = 'termine' AND expire_le < now() LIMIT 5`;
-  for (const t of vieux) await expirer(t);
-}
-
-// ---------------------------------------------------------------------------------------
-// OUTILS
-// ---------------------------------------------------------------------------------------
-// tri des références « 62160-000-XM-0307 » : commune, préfixe, section, numéro
-function triReference(a, b) {
-  const p = r => { const m = String(r).match(/^(\d{5})-?(\d{3})-?([0-9A-Z]{1,2})-?(\d{1,4})$/i); return m ? [m[1], m[2], m[3].padStart(2, '0'), m[4].padStart(4, '0')] : [String(r)]; };
-  const x = p(a), y = p(b);
-  for (let i = 0; i < Math.max(x.length, y.length); i++) { const c = String(x[i] || '').localeCompare(String(y[i] || ''), 'fr'); if (c) return c; }
-  return 0;
-}
-// nom du fichier : espaces et lettres accentuées remplacés par un tiret bas (16/09/2026)
-function nomFichier(s) {
-  return String(s).trim().replace(/[^A-Za-z0-9-]/g, '_');
-}
-function decouper(texte, fonte, taille, largeur) {
-  const mots = String(texte).split(/\s+/), lignes = []; let l = '';
-  for (const m of mots) { const essai = l ? `${l} ${m}` : m; if (fonte.widthOfTextAtSize(essai, taille) > largeur && l) { lignes.push(l); l = m; } else l = essai; }
-  if (l) lignes.push(l);
-  return lignes;
-}
-function couper(texte, fonte, taille, largeur) {
-  let t = String(texte);
-  if (fonte.widthOfTextAtSize(t, taille) <= largeur) return t;
-  while (t.length > 1 && fonte.widthOfTextAtSize(t + '…', taille) > largeur) t = t.slice(0, -1);
-  return t + '…';
+// Rend le texte d'un bloc avec ses précisions. Un crochet sans valeur
+// reste visible — c'est voulu, cf. en-tête.
+export function rendre(code, precisions = {}) {
+  const bloc = PHRASES[code];
+  if (!bloc) return { erreur: `bloc inconnu : ${code}` };
+  const texte = bloc.texte.replace(/\{(\w+)\}/g, (m, k) =>
+    precisions[k] != null && precisions[k] !== '' ? String(precisions[k]) : `[${k}]`);
+  return { ...bloc, code, texte };
 }
