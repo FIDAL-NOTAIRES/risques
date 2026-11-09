@@ -166,12 +166,70 @@ function resumeBiens(etat) {
     const f = b.ref && etat.faites ? etat.faites[b.ref] : null;
     return {
       numero: b.numero, refs: b.refs || [], jaune: !!b.jaune, introuvable: b.introuvable || null,
+      // 09/11/2026 — confrontation Géoportail / bases interrogées en direct,
+      // parcelle par parcelle sur TOUTES les parcelles du bien.
+      ...resumeConfrontation(b, etat),
       rubriques: f && Array.isArray(f.rubriques)
         ? f.rubriques.map(r => ({ numero: r.numero, cle: r.cle, intitule: r.intitule, statut: r.statut,
                                   phrase: r.phrase || null, maximal: r.maximal || null }))
         : []
     };
   });
+}
+
+// 09/11/2026 — CONFRONTATION GÉOPORTAIL DE L'URBANISME / DONNÉES EN DIRECT
+// (règle de JFD : à chaque rapport, comparaison systématique ; divergence →
+// orange côté MARTEAU, avec les deux versions). Trois sujets se lisent ici
+// des deux côtés, sur la même parcelle :
+//   - sols pollués : INFORMATION 38-00 du Géoportail / rubrique `sis` ;
+//   - débroussaillement : INFORMATION 43-00 / rubrique `old` (Géorisques) ;
+//   - plans de prévention : servitude PM1 (naturels et miniers) ou PM3
+//     (technologiques) / rubriques `pprn`, `pprm`, `pprt`.
+// Le côté « direct » est le statut de la rubrique, tel que le rapport le dit.
+// Une rubrique non obtenue, une couche du Géoportail muette ou une commune
+// sans document publié : rien à comparer, on le dit sans alerte.
+function confronterGpu(d, rubriques) {
+  const pad = v => String(v ?? '').padStart(2, '0');
+  if (!d.docurba || !d.docurba.ok) return { comparable: false, raison: "Géoportail de l'urbanisme injoignable" };
+  if (!d.docurba.items.length) return { comparable: false, raison: "aucun document d'urbanisme publié au Géoportail" };
+  const statut = cle => { const r = rubriques.find(x => x.cle === cle); return r ? r.statut : null; };
+  const lisible = st => st === 'concerne' || st === 'non_concerne';
+  const codes = new Set((d.infoSurf && d.infoSurf.ok ? d.infoSurf.items : []).map(i => `${pad(i.typeinf)}-${pad(i.stypeinf)}`));
+  const sup = new Set((d.supS && d.supS.ok ? d.supS.items : []).map(x => String(x.suptype || '').toUpperCase()));
+  const ecarts = [];
+  const comparer = (sujet, gpuOk, gpuOui, cles, libGpuOui, libGpuNon, libDirOui, libDirNon) => {
+    if (!gpuOk) return;
+    const st = cles.map(statut).filter(lisible);
+    if (!st.length) return;
+    const dirOui = st.includes('concerne');
+    if (gpuOui !== dirOui) ecarts.push({ sujet, geoportail: gpuOui ? libGpuOui : libGpuNon, direct: dirOui ? libDirOui : libDirNon });
+  };
+  const infoOk = !!(d.infoSurf && d.infoSurf.ok), supOk = !!(d.supS && d.supS.ok);
+  comparer('sols pollués', infoOk, codes.has('38-00'), ['sis'],
+    "secteur d'information sur les sols annexé au document d'urbanisme", "aucun secteur d'information sur les sols annexé",
+    'Géorisques : bien concerné au titre des sites et sols pollués', 'Géorisques : bien non concerné');
+  comparer('débroussaillement', infoOk, codes.has('43-00'), ['old'],
+    "obligations de débroussaillement annexées au document d'urbanisme", 'aucune obligation de débroussaillement annexée',
+    'Géorisques : bien en zone soumise au débroussaillement', 'Géorisques : bien hors zone de débroussaillement');
+  comparer('plan de prévention des risques naturels ou miniers', supOk, sup.has('PM1'), ['pprn', 'pprm'],
+    'servitude PM1 publiée sur la parcelle', 'aucune servitude PM1 publiée',
+    'Géorisques : plan de prévention couvrant le bien', 'Géorisques : aucun plan de prévention sur le bien');
+  comparer('plan de prévention des risques technologiques', supOk, sup.has('PM3'), ['pprt'],
+    'servitude PM3 publiée sur la parcelle', 'aucune servitude PM3 publiée',
+    'Géorisques : plan de prévention technologique couvrant le bien', 'Géorisques : aucun plan de prévention technologique');
+  return { comparable: true, ecarts };
+}
+
+function resumeConfrontation(b, etat) {
+  const refs = (b.refs && b.refs.length ? b.refs : [b.ref]).filter(Boolean);
+  const ecarts = [], sansGpu = [];
+  for (const ref of refs) {
+    const c = etat.faites && etat.faites[ref] && etat.faites[ref].confrontation;
+    if (!c) continue;
+    if (!c.comparable) { sansGpu.push(`${ref} (${c.raison})`); continue; }
+    for (const e of c.ecarts) ecarts.push({ ref, ...e });
+  }
+  return { ecarts_gpu: ecarts, sans_gpu: sansGpu };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -193,6 +251,7 @@ async function moissonner(ctx) {
           ref, adresse: adresse ? adresse.libelle : libelleCommune(donnees), commune: libelleCommune(donnees),
           rubriques: rubriques.map(({ carte, ...r }) => ({ ...r, carte: carte ? { service: carte.service, couche: carte.couche, echelle: carte.echelle } : null })),
           signature: rubriques.map(r => r.statut),
+          confrontation: confronterGpu(donnees, rubriques),
           jaune: rubriques.some(r => r.statut === 'non_obtenu'),
           sources: sources(donnees, new Date(etat.horodatage))
         };
