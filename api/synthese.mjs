@@ -616,7 +616,7 @@ function premiereValeur(obj) {
 }
 
 export function sources(d, horodatage) {
-  const quand = horodatage.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' });
+  const quand = horodatage.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Europe/Paris' });
   const etat = ok => ok ? 'réponse obtenue' : 'sans réponse';
   return [
     ['Géorisques, interface v2 (zonage sismique, radon, OLD, PPR, RGA, CASIAS, ICPE)', `interrogée par référence cadastrale le ${quand} — ${etat(d.sismique.ok && d.radon.ok && d.old.ok && d.pprn.ok && d.rga.ok && d.casias.ok && d.icpe.ok)}`],
@@ -654,7 +654,7 @@ async function composer({ ref, dossier, bien, adresse, donnees, rubriques, horod
   const sansG  = await doc.embedFont(police('SANS_BOLD'));
   const F = { serif, serifG, sans, sansG };
 
-  const dateLongue = horodatage.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  const dateLongue = horodatage.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' });
   const libAdresse = adresse ? adresse.libelle : libelleCommune(donnees);
   const e = { doc, F, pages: [], page: null, y: 0, ref, dossier, adresse: libAdresse, date: dateLongue, liens: [], ancres: {} };
 
