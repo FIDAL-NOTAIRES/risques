@@ -343,7 +343,7 @@ async function assembler(ctx) {
   doc.registerFontkit(fontkit);
   const serifG = await doc.embedFont(police('GELASIO_BOLD')), serif = await doc.embedFont(police('GELASIO_REGULAR'));
   const sans = await doc.embedFont(police('SANS_REGULAR')), sansG = await doc.embedFont(police('SANS_BOLD'));
-  const date = new Date(etat.horodatage).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  const date = new Date(etat.horodatage).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' });
 
   // page de garde UNIQUE et sobre : nom de la société et date (16/09/2026)
   const garde = doc.addPage([PAGE.l, PAGE.h]);
@@ -423,7 +423,7 @@ async function assembler(ctx) {
     p.drawText(d, { x: PAGE.l - MG - w, y: BAS - 32, size: 7.5, font: sans, color: GRIS });
   });
 
-  const nom = `ERP_${new Date(etat.horodatage).toISOString().slice(0, 10).replace(/-/g, '')}_${nomFichier(t.societe || 'portefeuille')}.pdf`;
+  const nom = `ERP_${new Date(etat.horodatage).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '')}_${nomFichier(t.societe || 'portefeuille')}.pdf`;
   const depot = await put(`risques/portefeuille/${t.id}/${nom}`, Buffer.from(await doc.save()), { access: 'public', addRandomSuffix: true, contentType: 'application/pdf' });
   const fichiers = [depot.url, ...Object.values(etat.sections).map(s => s && s.url).filter(Boolean), ...etat.erps.map(e => e.url)];
   return { url: depot.url, fichiers };
