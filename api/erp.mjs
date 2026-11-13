@@ -157,7 +157,7 @@ async function composer({ ref, dossier, bien, donnees, qualif, avecCartes }) {
   filet(etat);
   etat.y -= 16;
 
-  const auj = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  const auj = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' });
   paragraphe(etat, `Établi le ${auj}.`, 10, sansG);
   etat.y -= 6;
   paragraphe(etat, "L'obligation d'information des acquéreurs et locataires résulte de l'article L. 125-5 du code de l'environnement. Le contenu du présent état est déterminé par les articles R. 125-23 et R. 125-24 du même code. Aucun modèle n'est imposé depuis l'abrogation de l'arrêté du 13 octobre 2005 par l'arrêté du 30 avril 2024.", 9.5, sans, GRIS);
